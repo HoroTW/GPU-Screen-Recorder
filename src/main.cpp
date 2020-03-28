@@ -144,17 +144,13 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id, WindowPixmap 
     glGenerateMipmap(GL_TEXTURE_2D);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &pixmap.texture_width);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &pixmap.texture_height);
+    glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);//GL_LINEAR );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);//GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
+	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     printf("texture width: %d, height: %d\n", pixmap.texture_width, pixmap.texture_height);
 
     glGenTextures(1, &pixmap.target_texture_id);
     glBindTexture(GL_TEXTURE_2D, pixmap.target_texture_id);
-    //glTexStorage2D()
-    uint8_t *image_data = (uint8_t*)malloc(pixmap.texture_width * pixmap.texture_height * 4);
-    assert(image_data);
-    for(int i = 0; i < pixmap.texture_width * pixmap.texture_height * 4; i += 4) {
-        *(uint32_t*)&image_data[i] = 0xFF0000FF;
-    }
-    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pixmap.texture_width, pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pixmap.texture_width, pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glGenerateMipmap(GL_TEXTURE_2D);
     int err2 = glGetError();
@@ -292,7 +288,7 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
     //av_packet_unref(&av_packet);
 }
 #else
-static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, AVFormatContext *av_format_context, FILE *output_file) {
+static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, AVFormatContext *av_format_context) {
     for( ; ; ) {
         AVPacket *av_packet = new AVPacket;
         av_init_packet(av_packet);
@@ -310,12 +306,13 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
             av_packet->stream_index = stream->index;
             //av_packet->stream_index = 0;
 
+/*
             int written = fwrite(av_packet->data, 1, av_packet->size, output_file);
 
             if(written != av_packet->size) {
                 fprintf(stderr, "Failed to write %d bytes to file: %d, %d\n", av_packet->size, written, ferror(output_file));
             }
-
+*/
             if(av_interleaved_write_frame(av_format_context, av_packet) < 0) {
                 fprintf(stderr, "Error: Failed to write frame to muxer\n");
             }
@@ -363,11 +360,11 @@ static AVStream* add_stream(AVFormatContext *av_format_context, AVCodec **codec,
             codec_context->codec_id = codec_id;
             codec_context->bit_rate = 400000;
             // Resolution must be a multiple of two
-            codec_context->width = 640;
-            codec_context->height = 480;
+            codec_context->width = 1920;
+            codec_context->height = 1080;
             // Timebase: This is the fundamental unit of time (in seconds) in terms of
             // which frame timestamps are represented. For fixed-fps content,
-            // timebase should be 1/framerate and timestamp increments should be identitcal to 1
+            // timebase should be 1/framerate and timestamp increments should be identical to 1
             codec_context->time_base.num = 1;
             codec_context->time_base.den = 60;
             codec_context->framerate.num = 60;
@@ -461,16 +458,11 @@ static void open_video(AVCodec *codec, AVStream *stream, WindowPixmap &window_pi
         exit(1);
     }
     res = cuCtxPopCurrent(&old_ctx);
-
-    if(av_hwframe_get_buffer(frame_context, *frame, 0) < 0) {
-        fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
-        exit(1);
-    }
 }
 
 static void close_video(AVStream *video_stream, AVFrame *frame) {
     avcodec_close(video_stream->codec);
-    av_frame_free(&frame);
+    //av_frame_free(&frame);
 }
 
 int main(int argc, char **argv) {
@@ -511,7 +503,13 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    GLFWwindow *window = glfwCreateWindow(3840, 2160, "Hello world", nullptr, nullptr);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
+
+    GLFWwindow *window = glfwCreateWindow(1280, 720, "Hello world", nullptr, nullptr);
     if(!window) {
         fprintf(stderr, "Error: Failed to create glfw window\n");
         glfwTerminate();
@@ -519,6 +517,7 @@ int main(int argc, char **argv) {
     }
 
     glfwMakeContextCurrent(window);
+    //glfwSwapInterval(1);
 
     glewExperimental = GL_TRUE;
 	GLenum nGlewError = glewInit();
@@ -598,9 +597,26 @@ int main(int argc, char **argv) {
 
     int frame_count = 0;
 
-    FILE *output_file = fopen("video.mp4", "wb");
-    if(!output_file) {
-        fprintf(stderr, "Failed to open file!\n");
+    CUresult res;
+    CUcontext old_ctx;
+    res = cuCtxPopCurrent(&old_ctx);
+    res = cuCtxPushCurrent(*cuda_context);
+
+    // Get texture
+    res = cuGraphicsResourceSetMapFlags(cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
+    res = cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
+
+    // Map texture to cuda array
+    CUarray mapped_array;
+    res = cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
+
+    // Release texture
+    //res = cuGraphicsUnmapResources(1, &cuda_graphics_resource, 0);
+
+    // TODO: Remove this
+    AVCodecContext *codec_context = video_stream->codec;
+    if(av_hwframe_get_buffer(codec_context->hw_frames_ctx, frame, 0) < 0) {
+        fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
         exit(1);
     }
 
@@ -609,35 +625,12 @@ int main(int argc, char **argv) {
         glfwSwapBuffers(window);
         glfwPollEvents();
 
-        AVCodecContext *codec_context = video_stream->codec;
-        if(av_hwframe_get_buffer(codec_context->hw_frames_ctx, frame, 0) < 0) {
-            fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
-            exit(1);
-        }
-
         glCopyImageSubData(
             window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
             window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
             window_pixmap.texture_width, window_pixmap.texture_height, 1);
-        int err = glGetError();
-        printf("error: %d\n", err);
-
-        // Get context
-        CUresult res;
-        CUcontext old_ctx;
-        res = cuCtxPopCurrent(&old_ctx);
-        res = cuCtxPushCurrent(*cuda_context);
-
-        // Get texture
-        res = cuGraphicsResourceSetMapFlags(cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
-        res = cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
-
-        // Map texture to cuda array
-        CUarray mapped_array;
-        res = cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
-
-        // Release texture
-        res = cuGraphicsUnmapResources(1, &cuda_graphics_resource, 0);
+        //int err = glGetError();
+        //printf("error: %d\n", err);
 
         CUDA_MEMCPY2D memcpy_struct;
         memcpy_struct.srcXInBytes = 0;
@@ -654,13 +647,13 @@ int main(int argc, char **argv) {
         memcpy_struct.WidthInBytes = frame->width * 4;
         memcpy_struct.Height = frame->height;
         cuMemcpy2D(&memcpy_struct);
-        res = cuCtxPopCurrent(&old_ctx);
+        //res = cuCtxPopCurrent(&old_ctx);
 
         frame->pts = frame_count++;
         if(avcodec_send_frame(video_stream->codec, frame) < 0) {
             fprintf(stderr, "Error: avcodec_send_frame failed\n");
         }
-        receive_frames(video_stream->codec, video_stream, av_format_context, output_file);
+        receive_frames(video_stream->codec, video_stream, av_format_context);
     }
 
 #if 0
