@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <string>
 #include <vector>
 
@@ -38,18 +39,17 @@ struct ScopedGLXFBConfig {
 };
 
 struct WindowPixmap {
-    WindowPixmap() : pixmap(None), glx_pixmap(None), texture_id(0), texture_width(0), texture_height(0) {
+    WindowPixmap() : pixmap(None), glx_pixmap(None), texture_id(0), target_texture_id(0), texture_width(0), texture_height(0) {
 
     }
 
     Pixmap pixmap;
     GLXPixmap glx_pixmap;
     GLuint texture_id;
+    GLuint target_texture_id;
 
     GLint texture_width;
     GLint texture_height;
-
-    GLuint dst_texture_id;
 };
 
 static bool x11_supports_composite_named_window_pixmap(Display *dpy) {
@@ -64,6 +64,11 @@ static bool x11_supports_composite_named_window_pixmap(Display *dpy) {
 }
 
 static void cleanup_window_pixmap(Display *dpy, WindowPixmap &pixmap) {
+    if(pixmap.target_texture_id) {
+        glDeleteTextures(1, &pixmap.target_texture_id);
+        pixmap.target_texture_id = 0;
+    }
+
     if(pixmap.texture_id) {
         glDeleteTextures(1, &pixmap.texture_id);
         pixmap.texture_id = 0;
@@ -90,16 +95,16 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id, WindowPixmap 
 		GLX_BIND_TO_TEXTURE_RGBA_EXT, True,
 		GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT,
 		GLX_BIND_TO_TEXTURE_TARGETS_EXT, GLX_TEXTURE_2D_BIT_EXT,
-		//GLX_BIND_TO_MIPMAP_TEXTURE_EXT, True,
+		GLX_BIND_TO_MIPMAP_TEXTURE_EXT, True,
 		GLX_DOUBLEBUFFER, False,
-		GLX_Y_INVERTED_EXT, (int)GLX_DONT_CARE,
+		//GLX_Y_INVERTED_EXT, (int)GLX_DONT_CARE,
 		None
     };
 
     const int pixmap_attribs[] = {
 		GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_2D_EXT,
-		GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGB_EXT,
-		GLX_MIPMAP_TEXTURE_EXT, 0,
+		GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGBA_EXT,
+		GLX_MIPMAP_TEXTURE_EXT, 1,
 		None
     };
 
@@ -134,12 +139,42 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id, WindowPixmap 
 
 	//glEnable(GL_BLEND);
     //glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
+#if 1
 	glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
+    glGenerateMipmap(GL_TEXTURE_2D);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &pixmap.texture_width);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &pixmap.texture_height);
     printf("texture width: %d, height: %d\n", pixmap.texture_width, pixmap.texture_height);
-    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pixmap.texture_width, pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+    glGenTextures(1, &pixmap.target_texture_id);
+    glBindTexture(GL_TEXTURE_2D, pixmap.target_texture_id);
+    //glTexStorage2D()
+    uint8_t *image_data = (uint8_t*)malloc(pixmap.texture_width * pixmap.texture_height * 4);
+    assert(image_data);
+    for(int i = 0; i < pixmap.texture_width * pixmap.texture_height * 4; i += 4) {
+        *(uint32_t*)&image_data[i] = 0xFF0000FF;
+    }
+    //glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pixmap.texture_width, pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pixmap.texture_width, pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    int err2 = glGetError();
+    printf("error: %d\n", err2);
+    glCopyImageSubData(
+        pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+        pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+        pixmap.texture_width, pixmap.texture_height, 1);
+    int err = glGetError();
+    printf("error: %d\n", err);
+#else
+    pixmap.texture_width = 640;
+    pixmap.texture_height = 480;
+    uint8_t *image_data = (uint8_t*)malloc(pixmap.texture_width * pixmap.texture_height * 4);
+    assert(image_data);
+    for(int i = 0; i < pixmap.texture_width * pixmap.texture_height * 4; i += 4) {
+        *(uint32_t*)&image_data[i] = 0xFF0000FF;
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pixmap.texture_width, pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data);
+#endif
     //glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL); 
 	//glGenerateTextureMipmapEXT(glxpixmap, GL_TEXTURE_2D);
 
@@ -147,23 +182,19 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id, WindowPixmap 
 
 	//glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
 	//glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+
+
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);//GL_LINEAR );
 	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);//GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
     glBindTexture(GL_TEXTURE_2D, 0);
-
-    glGenTextures(1, &pixmap.dst_texture_id);
-    glBindTexture(GL_TEXTURE_2D, pixmap.dst_texture_id);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, pixmap.texture_width, pixmap.texture_height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-    glCopyImageSubData(pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0, pixmap.dst_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0, pixmap.texture_width, pixmap.texture_height, 0);
-    glBindTexture(GL_TEXTURE_2D, 0);
     
-    return pixmap.texture_id != 0 && pixmap.dst_texture_id != 0;
+    return pixmap.texture_id != 0 && pixmap.target_texture_id != 0;
 }
 
 std::vector<std::string> get_hardware_acceleration_device_names() {
-    #if 1
+    #if 0
     std::vector<std::string> result;
 
     cl_uint platform_count = 0;
@@ -219,6 +250,7 @@ static inline double ToDouble(const AVRational& r) {
 	return (double) r.num / (double) r.den;
 }
 
+#if 0
 static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, AVFormatContext *av_format_context) {
     for( ; ; ) {
         AVPacket *av_packet = new AVPacket;
@@ -259,6 +291,187 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
 	}
     //av_packet_unref(&av_packet);
 }
+#else
+static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, AVFormatContext *av_format_context, FILE *output_file) {
+    for( ; ; ) {
+        AVPacket *av_packet = new AVPacket;
+        av_init_packet(av_packet);
+        av_packet->data = NULL;
+        av_packet->size = 0;
+		int res = avcodec_receive_packet(av_codec_context, av_packet);
+		if(res == 0) { // we have a packet, send the packet to the muxer
+			//printf("Received packet!\n");
+            //printf("data: %p, size: %d, pts: %ld\n", (void*)av_packet->data, av_packet->size, av_packet->pts);
+            //printf("timebase: %f\n", ToDouble(stream->time_base));
+
+			av_packet->pts = av_rescale_q_rnd(av_packet->pts, av_codec_context->time_base, stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+            av_packet->dts = av_rescale_q_rnd(av_packet->dts, av_codec_context->time_base, stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+            av_packet->duration = av_rescale_q(av_packet->duration, av_codec_context->time_base, stream->time_base);
+            av_packet->stream_index = stream->index;
+            //av_packet->stream_index = 0;
+
+            int written = fwrite(av_packet->data, 1, av_packet->size, output_file);
+
+            if(written != av_packet->size) {
+                fprintf(stderr, "Failed to write %d bytes to file: %d, %d\n", av_packet->size, written, ferror(output_file));
+            }
+
+            if(av_interleaved_write_frame(av_format_context, av_packet) < 0) {
+                fprintf(stderr, "Error: Failed to write frame to muxer\n");
+            }
+            //av_packet_unref(&av_packet);
+		} else if(res == AVERROR(EAGAIN)) { // we have no packet
+            //printf("No packet!\n");
+			break;
+		} else if(res == AVERROR_EOF) { // this is the end of the stream
+			printf("End of stream!\n");
+            break;
+		} else {
+			printf("Unexpected error: %d\n", res);
+            break;
+		}
+	}
+    //av_packet_unref(&av_packet);
+}
+#endif
+
+static AVStream* add_stream(AVFormatContext *av_format_context, AVCodec **codec, enum AVCodecID codec_id) {
+    //*codec = avcodec_find_encoder(codec_id);
+    *codec = avcodec_find_encoder_by_name("h264_nvenc");
+    if(!*codec) {
+        fprintf(stderr, "Error: Could not find encoder for '%s'\n", avcodec_get_name(codec_id));
+        exit(1);
+    }
+
+    AVStream *stream = avformat_new_stream(av_format_context, *codec);
+    if(!stream) {
+        fprintf(stderr, "Error: Could not allocate stream\n");
+        exit(1);
+    }
+    stream->id = av_format_context->nb_streams - 1;
+    AVCodecContext *codec_context = stream->codec;
+
+    switch((*codec)->type) {
+        case AVMEDIA_TYPE_AUDIO: {
+            codec_context->sample_fmt = (*codec)->sample_fmts ? (*codec)->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
+            codec_context->bit_rate = 64000;
+            codec_context->sample_rate = 44100;
+            codec_context->channels = 2;
+            break;
+        }
+        case AVMEDIA_TYPE_VIDEO: {
+            codec_context->codec_id = codec_id;
+            codec_context->bit_rate = 400000;
+            // Resolution must be a multiple of two
+            codec_context->width = 640;
+            codec_context->height = 480;
+            // Timebase: This is the fundamental unit of time (in seconds) in terms of
+            // which frame timestamps are represented. For fixed-fps content,
+            // timebase should be 1/framerate and timestamp increments should be identitcal to 1
+            codec_context->time_base.num = 1;
+            codec_context->time_base.den = 60;
+            codec_context->framerate.num = 60;
+            codec_context->framerate.den = 1;
+            codec_context->sample_aspect_ratio.num = 1;
+            codec_context->sample_aspect_ratio.den = 1;
+            codec_context->gop_size = 12; // Emit one intra frame every twelve frames at most
+            codec_context->pix_fmt = AV_PIX_FMT_CUDA;
+            if(codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
+                codec_context->mb_decision = 2;
+            break;
+        }
+        default:
+            break;
+    }
+
+    // Some formats want stream headers to be seperate
+    if(av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
+        av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+    return stream;
+}
+
+static void open_video(AVCodec *codec, AVStream *stream, WindowPixmap &window_pixmap, AVFrame **frame, AVBufferRef **device_ctx, CUgraphicsResource *cuda_graphics_resource) {
+    int ret;
+    AVCodecContext *codec_context = stream->codec;
+
+    std::vector<std::string> hardware_accelerated_devices = get_hardware_acceleration_device_names();
+    if(hardware_accelerated_devices.empty()) {
+        fprintf(stderr, "Error: No hardware accelerated device was found on your system\n");
+        exit(1);
+    }
+
+    if(av_hwdevice_ctx_create(device_ctx, AV_HWDEVICE_TYPE_CUDA, hardware_accelerated_devices[0].c_str(), NULL, 0) < 0) {
+        fprintf(stderr, "Error: Failed to create hardware device context for gpu: %s\n", hardware_accelerated_devices[0].c_str());
+        exit(1);
+    }
+
+    AVBufferRef *frame_context = av_hwframe_ctx_alloc(*device_ctx);
+    if(!frame_context) {
+        fprintf(stderr, "Error: Failed to create hwframe context\n");
+        exit(1);
+    }
+
+    AVHWFramesContext *hw_frame_context = (AVHWFramesContext*)frame_context->data;
+    hw_frame_context->width = codec_context->width;
+    hw_frame_context->height = codec_context->height;
+    hw_frame_context->sw_format = AV_PIX_FMT_0BGR32;
+    hw_frame_context->format = codec_context->pix_fmt;
+    hw_frame_context->device_ref = *device_ctx;
+    hw_frame_context->device_ctx = (AVHWDeviceContext*)(*device_ctx)->data;
+
+    if(av_hwframe_ctx_init(frame_context) < 0) {
+        fprintf(stderr, "Error: Failed to initialize hardware frame context (note: ffmpeg version needs to be > 4.0\n");
+        exit(1);
+    }
+
+    codec_context->hw_device_ctx = *device_ctx;
+    codec_context->hw_frames_ctx = frame_context;
+
+    ret = avcodec_open2(codec_context, codec, nullptr);
+    if(ret < 0) {
+        fprintf(stderr, "Error: Could not open video codec: %s\n", "blabla");//av_err2str(ret));
+        exit(1);
+    }
+
+    *frame = av_frame_alloc();
+    if(!*frame) {
+        fprintf(stderr, "Error: Failed to allocate frame\n");
+        exit(1);
+    }
+    (*frame)->format = codec_context->pix_fmt;
+    (*frame)->width = codec_context->width;
+    (*frame)->height = codec_context->height;
+
+    AVHWDeviceContext *hw_device_context = (AVHWDeviceContext*)(*device_ctx)->data;
+    AVCUDADeviceContext *cuda_device_context = (AVCUDADeviceContext*)hw_device_context->hwctx;
+    CUcontext *cuda_context = &(cuda_device_context->cuda_ctx);
+    if(!cuda_context) {
+        fprintf(stderr, "Error: No cuda context\n");
+        exit(1);
+    }
+
+    CUresult res;
+    CUcontext old_ctx;
+    res = cuCtxPopCurrent(&old_ctx);
+    res = cuCtxPushCurrent(*cuda_context);
+    res = cuGraphicsGLRegisterImage(cuda_graphics_resource, window_pixmap.target_texture_id, GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
+    if(res != CUDA_SUCCESS) {
+        fprintf(stderr, "Error: cuGraphicsGLRegisterImage failed, error %d, texture id: %u\n", res, window_pixmap.target_texture_id);
+        exit(1);
+    }
+    res = cuCtxPopCurrent(&old_ctx);
+
+    if(av_hwframe_get_buffer(frame_context, *frame, 0) < 0) {
+        fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
+        exit(1);
+    }
+}
+
+static void close_video(AVStream *video_stream, AVFrame *frame) {
+    avcodec_close(video_stream->codec);
+    av_frame_free(&frame);
+}
 
 int main(int argc, char **argv) {
     if(argc < 2) {
@@ -298,7 +511,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    GLFWwindow *window = glfwCreateWindow(1920, 1080, "Hello world", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(3840, 2160, "Hello world", nullptr, nullptr);
     if(!window) {
         fprintf(stderr, "Error: Failed to create glfw window\n");
         glfwTerminate();
@@ -321,6 +534,205 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    const char *filename = "test_video.mp4";
+
+
+    // Video start
+    AVFormatContext *av_format_context;
+    // The output format is automatically guessed by the file extension
+    avformat_alloc_output_context2(&av_format_context, nullptr, nullptr, filename);
+    if(!av_format_context) {
+        fprintf(stderr, "Error: Failed to deduce output format from file extension .mp4\n");
+        return 1;
+    }
+
+    AVOutputFormat *output_format = av_format_context->oformat;
+    AVCodec *video_codec;
+    AVStream *video_stream = add_stream(av_format_context, &video_codec, output_format->video_codec);
+    if(!video_stream) {
+        fprintf(stderr, "Error: Failed to create video stream\n");
+        return 1;
+    }
+
+    AVFrame *frame;
+    AVBufferRef *device_ctx;
+    CUgraphicsResource cuda_graphics_resource;
+    open_video(video_codec, video_stream, window_pixmap, &frame, &device_ctx, &cuda_graphics_resource);
+    av_dump_format(av_format_context, 0, filename, 1);
+
+    if(!(output_format->flags & AVFMT_NOFILE)) {
+        int ret = avio_open(&av_format_context->pb, filename, AVIO_FLAG_WRITE);
+        if(ret < 0) {
+            fprintf(stderr, "Error: Could not open '%s': %s\n", filename, "blabla");//av_err2str(ret));
+            return 1;
+        }
+    }
+
+    int ret = avformat_write_header(av_format_context, nullptr);
+    if(ret < 0) {
+        fprintf(stderr, "Error occurred when opening output file: %s\n", "blabla");//av_err2str(ret));
+        return 1;
+    }
+
+    AVHWDeviceContext *hw_device_context = (AVHWDeviceContext*)device_ctx->data;
+    AVCUDADeviceContext *cuda_device_context = (AVCUDADeviceContext*)hw_device_context->hwctx;
+    CUcontext *cuda_context = &(cuda_device_context->cuda_ctx);
+    if(!cuda_context) {
+        fprintf(stderr, "Error: No cuda context\n");
+        exit(1);
+    }
+
+    //av_frame_free(&rgb_frame);
+    //avcodec_close(av_codec_context);
+
+    XSelectInput(dpy, src_window_id, StructureNotifyMask);
+
+    int damage_event;
+    int damage_error;
+    if(!XDamageQueryExtension(dpy, &damage_event, &damage_error)) {
+        fprintf(stderr, "Error: XDamage is not supported by your X11 server\n");
+        return 1;
+    }
+
+    Damage xdamage = XDamageCreate(dpy, src_window_id, XDamageReportNonEmpty);
+
+    int frame_count = 0;
+
+    FILE *output_file = fopen("video.mp4", "wb");
+    if(!output_file) {
+        fprintf(stderr, "Failed to open file!\n");
+        exit(1);
+    }
+
+    while(!glfwWindowShouldClose(window)) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+
+        AVCodecContext *codec_context = video_stream->codec;
+        if(av_hwframe_get_buffer(codec_context->hw_frames_ctx, frame, 0) < 0) {
+            fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
+            exit(1);
+        }
+
+        glCopyImageSubData(
+            window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+            window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+            window_pixmap.texture_width, window_pixmap.texture_height, 1);
+        int err = glGetError();
+        printf("error: %d\n", err);
+
+        // Get context
+        CUresult res;
+        CUcontext old_ctx;
+        res = cuCtxPopCurrent(&old_ctx);
+        res = cuCtxPushCurrent(*cuda_context);
+
+        // Get texture
+        res = cuGraphicsResourceSetMapFlags(cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
+        res = cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
+
+        // Map texture to cuda array
+        CUarray mapped_array;
+        res = cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
+
+        // Release texture
+        res = cuGraphicsUnmapResources(1, &cuda_graphics_resource, 0);
+
+        CUDA_MEMCPY2D memcpy_struct;
+        memcpy_struct.srcXInBytes = 0;
+        memcpy_struct.srcY = 0;
+        memcpy_struct.srcMemoryType = CUmemorytype::CU_MEMORYTYPE_ARRAY;
+        
+        memcpy_struct.dstXInBytes = 0;
+        memcpy_struct.dstY = 0;
+        memcpy_struct.dstMemoryType = CUmemorytype::CU_MEMORYTYPE_DEVICE;
+
+        memcpy_struct.srcArray = mapped_array;
+        memcpy_struct.dstDevice = (CUdeviceptr)frame->data[0];
+        memcpy_struct.dstPitch = frame->linesize[0];
+        memcpy_struct.WidthInBytes = frame->width * 4;
+        memcpy_struct.Height = frame->height;
+        cuMemcpy2D(&memcpy_struct);
+        res = cuCtxPopCurrent(&old_ctx);
+
+        frame->pts = frame_count++;
+        if(avcodec_send_frame(video_stream->codec, frame) < 0) {
+            fprintf(stderr, "Error: avcodec_send_frame failed\n");
+        }
+        receive_frames(video_stream->codec, video_stream, av_format_context, output_file);
+    }
+
+#if 0
+    XEvent e;
+    while (1) {
+        XNextEvent(dpy, &e);
+        if (e.type == ConfigureNotify) {
+            // Window resize
+            printf("Resize window!\n");
+            recreate_window_pixmap(dpy, src_window_id, window_pixmap);
+        } else if (e.type == damage_event + XDamageNotify) {
+            printf("Redraw!\n");
+            XDamageNotifyEvent *de = (XDamageNotifyEvent*)&e;
+            // de->drawable is the window ID of the damaged window
+            XserverRegion region = XFixesCreateRegion(dpy, nullptr, 0);
+            // Subtract all the damage, repairing the window
+            XDamageSubtract(dpy, de->damage, None, region);
+            XFixesDestroyRegion(dpy, region);
+
+            //glCopyImageSubData(window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0, window_pixmap.dst_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0, window_pixmap.texture_width, window_pixmap.texture_height, 0);
+            glBindTexture(GL_TEXTURE_2D, window_pixmap.dst_texture_id);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, window_pixmap.texture_width, window_pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, ff);
+
+            AVCodecContext *codec_context = video_stream->codec;
+            if(av_hwframe_get_buffer(codec_context->hw_frames_ctx, frame, 0) < 0) {
+                fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
+                exit(1);
+            }
+
+            // Get context
+            CUresult res;
+            CUcontext old_ctx;
+            res = cuCtxPopCurrent(&old_ctx);
+            res = cuCtxPushCurrent(*cuda_context);
+
+            // Get texture
+            res = cuGraphicsResourceSetMapFlags(cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
+            res = cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
+
+            // Map texture to cuda array
+            CUarray mapped_array;
+            res = cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
+
+            // Release texture
+            res = cuGraphicsUnmapResources(1, &cuda_graphics_resource, 0);
+
+            CUDA_MEMCPY2D memcpy_struct;
+            memcpy_struct.srcXInBytes = 0;
+            memcpy_struct.srcY = 0;
+            memcpy_struct.srcMemoryType = CUmemorytype::CU_MEMORYTYPE_ARRAY;
+            
+            memcpy_struct.dstXInBytes = 0;
+            memcpy_struct.dstY = 0;
+            memcpy_struct.dstMemoryType = CUmemorytype::CU_MEMORYTYPE_DEVICE;
+
+            memcpy_struct.srcArray = mapped_array;
+            memcpy_struct.dstDevice = (CUdeviceptr)frame->data[0];
+            memcpy_struct.dstPitch = frame->linesize[0];
+            memcpy_struct.WidthInBytes = frame->width * 4;
+            memcpy_struct.Height = frame->height;
+            cuMemcpy2D(&memcpy_struct);
+            res = cuCtxPopCurrent(&old_ctx);
+
+            frame->pts = frame_count++;
+            if(avcodec_send_frame(video_stream->codec, frame) < 0) {
+                fprintf(stderr, "Error: avcodec_send_frame failed\n");
+            }
+            receive_frames(video_stream->codec, video_stream, av_format_context, output_file);
+        }
+    }
+#endif
+#if 0
     //avcodec_register_all();
     AVCodec *av_codec = avcodec_find_encoder_by_name("h264_nvenc"); //avcodec_find_encoder(AV_CODEC_ID_H264);
     if(!av_codec) {
@@ -549,13 +961,27 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to write trailer\n");
     }
 
-    if(av_format_context->pb)
-        avio_close(av_format_context->pb);
+    close_video(video_stream, frame);
+
+    if(!(output_format->fmt & AVFMT_NOFILE))
+        avio_close(output_format->pb);
     avformat_free_context(av_format_context);
 
     XDamageDestroy(dpy, xdamage);
     av_buffer_unref(&device_ctx);
     avcodec_free_context(&av_codec_context);
+#else
+    if(av_write_trailer(av_format_context) != 0) {
+        fprintf(stderr, "Failed to write trailer\n");
+    }
+
+    close_video(video_stream, frame);
+
+    if(!(output_format->flags & AVFMT_NOFILE))
+        avio_close(av_format_context->pb);
+    avformat_free_context(av_format_context);
+    XDamageDestroy(dpy, xdamage);
+#endif
     cleanup_window_pixmap(dpy, window_pixmap);
     for(int i = 0; i < screen_count; ++i) {
         XCompositeUnredirectSubwindows(dpy, RootWindow(dpy, i), CompositeRedirectAutomatic);
