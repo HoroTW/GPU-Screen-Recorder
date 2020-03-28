@@ -289,21 +289,24 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
 }
 #else
 static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, AVFormatContext *av_format_context) {
+    AVPacket av_packet;
+    av_init_packet(&av_packet);
     for( ; ; ) {
-        AVPacket *av_packet = new AVPacket;
-        av_init_packet(av_packet);
-        av_packet->data = NULL;
-        av_packet->size = 0;
-		int res = avcodec_receive_packet(av_codec_context, av_packet);
+        av_packet.data = NULL;
+        av_packet.size = 0;
+		int res = avcodec_receive_packet(av_codec_context, &av_packet);
 		if(res == 0) { // we have a packet, send the packet to the muxer
 			//printf("Received packet!\n");
             //printf("data: %p, size: %d, pts: %ld\n", (void*)av_packet->data, av_packet->size, av_packet->pts);
             //printf("timebase: %f\n", ToDouble(stream->time_base));
 
-			av_packet->pts = av_rescale_q_rnd(av_packet->pts, av_codec_context->time_base, stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-            av_packet->dts = av_rescale_q_rnd(av_packet->dts, av_codec_context->time_base, stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-            av_packet->duration = av_rescale_q(av_packet->duration, av_codec_context->time_base, stream->time_base);
-            av_packet->stream_index = stream->index;
+			//av_packet.pts = av_rescale_q_rnd(av_packet.pts, av_codec_context->time_base, stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+            //av_packet.dts = av_rescale_q_rnd(av_packet.dts, av_codec_context->time_base, stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+            //av_packet.duration = 60;//av_rescale_q(av_packet->duration, av_codec_context->time_base, stream->time_base);
+            av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
+            av_packet.pts /= 2;
+            av_packet.dts /= 2;
+            av_packet.stream_index = stream->index;
             //av_packet->stream_index = 0;
 
 /*
@@ -313,7 +316,7 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
                 fprintf(stderr, "Failed to write %d bytes to file: %d, %d\n", av_packet->size, written, ferror(output_file));
             }
 */
-            if(av_interleaved_write_frame(av_format_context, av_packet) < 0) {
+            if(av_write_frame(av_format_context, &av_packet) < 0) {
                 fprintf(stderr, "Error: Failed to write frame to muxer\n");
             }
             //av_packet_unref(&av_packet);
@@ -328,7 +331,7 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
             break;
 		}
 	}
-    //av_packet_unref(&av_packet);
+    av_packet_unref(&av_packet);
 }
 #endif
 
@@ -358,7 +361,7 @@ static AVStream* add_stream(AVFormatContext *av_format_context, AVCodec **codec,
         }
         case AVMEDIA_TYPE_VIDEO: {
             codec_context->codec_id = codec_id;
-            codec_context->bit_rate = 400000;
+            codec_context->bit_rate = 4000000;
             // Resolution must be a multiple of two
             codec_context->width = 1920;
             codec_context->height = 1080;
@@ -375,6 +378,9 @@ static AVStream* add_stream(AVFormatContext *av_format_context, AVCodec **codec,
             codec_context->pix_fmt = AV_PIX_FMT_CUDA;
             if(codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
                 codec_context->mb_decision = 2;
+
+            //stream->time_base = codec_context->time_base;
+            //codec_context->ticks_per_frame = 30;
             break;
         }
         default:
@@ -503,10 +509,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
     GLFWwindow *window = glfwCreateWindow(1280, 720, "Hello world", nullptr, nullptr);
@@ -517,7 +519,7 @@ int main(int argc, char **argv) {
     }
 
     glfwMakeContextCurrent(window);
-    //glfwSwapInterval(1);
+    glfwSwapInterval(1);
 
     glewExperimental = GL_TRUE;
 	GLenum nGlewError = glewInit();
@@ -620,11 +622,14 @@ int main(int argc, char **argv) {
         exit(1);
     }
 
+    //double start_time = glfwGetTime();
+
     while(!glfwWindowShouldClose(window)) {
         glClear(GL_COLOR_BUFFER_BIT);
         glfwSwapBuffers(window);
         glfwPollEvents();
 
+        // TODO: Use a framebuffer instead. glCopyImageSubData requires opengl 4.2
         glCopyImageSubData(
             window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
             window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
@@ -649,6 +654,9 @@ int main(int argc, char **argv) {
         cuMemcpy2D(&memcpy_struct);
         //res = cuCtxPopCurrent(&old_ctx);
 
+        //double time_now = glfwGetTime();
+        //int frame_cc = (time_now - start_time) * 0.66666;
+        //printf("elapsed time: %d\n", frame_cc);
         frame->pts = frame_count++;
         if(avcodec_send_frame(video_stream->codec, frame) < 0) {
             fprintf(stderr, "Error: avcodec_send_frame failed\n");
@@ -975,7 +983,7 @@ int main(int argc, char **argv) {
     avformat_free_context(av_format_context);
     XDamageDestroy(dpy, xdamage);
 #endif
-    cleanup_window_pixmap(dpy, window_pixmap);
+    //cleanup_window_pixmap(dpy, window_pixmap);
     for(int i = 0; i < screen_count; ++i) {
         XCompositeUnredirectSubwindows(dpy, RootWindow(dpy, i), CompositeRedirectAutomatic);
     }
