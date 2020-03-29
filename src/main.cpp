@@ -27,7 +27,7 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 }
 
-#include <CL/cl.h>
+//#include <CL/cl.h>
 
 struct ScopedGLXFBConfig {
     ~ScopedGLXFBConfig() {
@@ -294,7 +294,12 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
     //av_packet_unref(&av_packet);
 }
 #else
-static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, AVFormatContext *av_format_context) {
+static int64_t rescale_ts(AVStream *stream, int64_t val) {
+    return av_rescale_q_rnd(val,
+        stream->codec->time_base, stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+}
+
+static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, AVFormatContext *av_format_context, int fps) {
     AVPacket av_packet;
     av_init_packet(&av_packet);
     for( ; ; ) {
@@ -310,8 +315,13 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
             //av_packet.dts = av_rescale_q_rnd(av_packet.dts, av_codec_context->time_base, stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
             //av_packet.duration = 60;//av_rescale_q(av_packet->duration, av_codec_context->time_base, stream->time_base);
             av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
-            //av_packet.pts /= 2;
-            //av_packet.dts /= 2;
+            //double timescale = ((double)fps / 60.0);
+            //av_packet.pts *= timescale;
+            //av_packet.dts *= timescale;
+            //stream->codec->time_base.num = 1;
+            //stream->codec->time_base.den = fps;
+            //av_packet.pts = rescale_ts(stream, av_packet.pts);
+            //av_packet.pts = rescale_ts(stream, av_packet.dts);
             av_packet.stream_index = stream->index;
             //av_packet->stream_index = 0;
 
@@ -345,7 +355,10 @@ static AVStream* add_stream(AVFormatContext *av_format_context, AVCodec **codec,
     //*codec = avcodec_find_encoder(codec_id);
     *codec = avcodec_find_encoder_by_name("h264_nvenc");
     if(!*codec) {
-        fprintf(stderr, "Error: Could not find encoder for '%s'\n", avcodec_get_name(codec_id));
+        *codec = avcodec_find_encoder_by_name("nvenc_h264");
+    }
+    if(!*codec) {
+        fprintf(stderr, "Error: Could not find h264_nvenc or nvenc_h264 encoder for %s\n", avcodec_get_name(codec_id));
         exit(1);
     }
 
@@ -376,8 +389,8 @@ static AVStream* add_stream(AVFormatContext *av_format_context, AVCodec **codec,
             // timebase should be 1/framerate and timestamp increments should be identical to 1
             codec_context->time_base.num = 1;
             codec_context->time_base.den = 60;
-            codec_context->framerate.num = 60;
-            codec_context->framerate.den = 1;
+            //codec_context->framerate.num = 60;
+            //codec_context->framerate.den = 1;
             codec_context->sample_aspect_ratio.num = 1;
             codec_context->sample_aspect_ratio.den = 1;
             codec_context->gop_size = 12; // Emit one intra frame every twelve frames at most
@@ -465,6 +478,7 @@ static void open_video(AVCodec *codec, AVStream *stream, WindowPixmap &window_pi
     res = cuCtxPopCurrent(&old_ctx);
     res = cuCtxPushCurrent(*cuda_context);
     res = cuGraphicsGLRegisterImage(cuda_graphics_resource, window_pixmap.target_texture_id, GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
+    //cuGraphicsUnregisterResource(*cuda_graphics_resource);
     if(res != CUDA_SUCCESS) {
         fprintf(stderr, "Error: cuGraphicsGLRegisterImage failed, error %d, texture id: %u\n", res, window_pixmap.target_texture_id);
         exit(1);
@@ -628,46 +642,74 @@ int main(int argc, char **argv) {
         exit(1);
     }
 
-    //double start_time = glfwGetTime();
+    double start_time = glfwGetTime();
+    int fps = 0;
+    int current_fps = 30;
 
+    XEvent e;
     while(!glfwWindowShouldClose(window)) {
         glClear(GL_COLOR_BUFFER_BIT);
         glfwSwapBuffers(window);
         glfwPollEvents();
 
-        // TODO: Use a framebuffer instead. glCopyImageSubData requires opengl 4.2
-        glCopyImageSubData(
-            window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-            window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-            window_pixmap.texture_width, window_pixmap.texture_height, 1);
-        //int err = glGetError();
-        //printf("error: %d\n", err);
+        double time_now = glfwGetTime();
+        if(time_now - start_time >= 1.0) {
+            printf("fps: %d\n", fps);
+            start_time = time_now;
+            current_fps = fps;
+            fps = 0;
+        }
 
-        CUDA_MEMCPY2D memcpy_struct;
-        memcpy_struct.srcXInBytes = 0;
-        memcpy_struct.srcY = 0;
-        memcpy_struct.srcMemoryType = CUmemorytype::CU_MEMORYTYPE_ARRAY;
-        
-        memcpy_struct.dstXInBytes = 0;
-        memcpy_struct.dstY = 0;
-        memcpy_struct.dstMemoryType = CUmemorytype::CU_MEMORYTYPE_DEVICE;
+        if (XCheckTypedEvent(dpy, ConfigureNotify, &e)) {
+            // Window resize
+            printf("Resize window!\n");
+            recreate_window_pixmap(dpy, src_window_id, window_pixmap);
+        }
 
-        memcpy_struct.srcArray = mapped_array;
-        memcpy_struct.dstDevice = (CUdeviceptr)frame->data[0];
-        memcpy_struct.dstPitch = frame->linesize[0];
-        memcpy_struct.WidthInBytes = frame->width * 4;
-        memcpy_struct.Height = frame->height;
-        cuMemcpy2D(&memcpy_struct);
-        //res = cuCtxPopCurrent(&old_ctx);
+        if (XCheckTypedEvent(dpy, damage_event + XDamageNotify, &e)) {
+            //printf("Redraw!\n");
+            XDamageNotifyEvent *de = (XDamageNotifyEvent*)&e;
+            // de->drawable is the window ID of the damaged window
+            XserverRegion region = XFixesCreateRegion(dpy, nullptr, 0);
+            // Subtract all the damage, repairing the window
+            XDamageSubtract(dpy, de->damage, None, region);
+            XFixesDestroyRegion(dpy, region);
 
-        //double time_now = glfwGetTime();
+            // TODO: Use a framebuffer instead. glCopyImageSubData requires opengl 4.2
+            glCopyImageSubData(
+                window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+                window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+                window_pixmap.texture_width, window_pixmap.texture_height, 1);
+            //int err = glGetError();
+            //printf("error: %d\n", err);
+
+            CUDA_MEMCPY2D memcpy_struct;
+            memcpy_struct.srcXInBytes = 0;
+            memcpy_struct.srcY = 0;
+            memcpy_struct.srcMemoryType = CUmemorytype::CU_MEMORYTYPE_ARRAY;
+            
+            memcpy_struct.dstXInBytes = 0;
+            memcpy_struct.dstY = 0;
+            memcpy_struct.dstMemoryType = CUmemorytype::CU_MEMORYTYPE_DEVICE;
+
+            memcpy_struct.srcArray = mapped_array;
+            memcpy_struct.dstDevice = (CUdeviceptr)frame->data[0];
+            memcpy_struct.dstPitch = frame->linesize[0];
+            memcpy_struct.WidthInBytes = frame->width * 4;
+            memcpy_struct.Height = frame->height;
+            cuMemcpy2D(&memcpy_struct);
+            //res = cuCtxPopCurrent(&old_ctx);
+        }
+
+        ++fps;
         //int frame_cc = (time_now - start_time) * 0.66666;
         //printf("elapsed time: %d\n", frame_cc);
-        frame->pts = frame_count++;
+        frame->pts = frame_count;
+        frame_count += 1;
         if(avcodec_send_frame(video_stream->codec, frame) < 0) {
             fprintf(stderr, "Error: avcodec_send_frame failed\n");
         }
-        receive_frames(video_stream->codec, video_stream, av_format_context);
+        receive_frames(video_stream->codec, video_stream, av_format_context, current_fps);
     }
 
 #if 0

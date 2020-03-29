@@ -16,7 +16,7 @@ typedef struct {
 */
 int sound_device_get_by_name(SoundDevice *device, const char *name = "default", unsigned int num_channels = 1, unsigned int period_frame_size = 32);
 
-int sound_device_close(SoundDevice *device);
+void sound_device_close(SoundDevice *device);
 
 /*
     Returns the next chunk of audio into @buffer.

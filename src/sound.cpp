@@ -59,7 +59,7 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
     return 0;
 }
 
-int sound_device_close(SoundDevice *device) {
+void sound_device_close(SoundDevice *device) {
     /* TODO: Is this also needed in @sound_device_get_by_name on failure? */
     snd_pcm_drain((snd_pcm_t*)device->handle);
     snd_pcm_close((snd_pcm_t*)device->handle);
