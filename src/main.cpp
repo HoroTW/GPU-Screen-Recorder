@@ -101,6 +101,8 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id, WindowPixmap 
 		None
     };
 
+    // Note that mipmap is generated even though its not used.
+    // glCopyImageSubData fails if the texture doesn't have mipmap.
     const int pixmap_attribs[] = {
 		GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_2D_EXT,
 		GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGBA_EXT,
@@ -149,6 +151,10 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id, WindowPixmap 
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     printf("texture width: %d, height: %d\n", pixmap.texture_width, pixmap.texture_height);
 
+    // Generating this second texture is needed because cuGraphicsGLRegisterImage
+    // cant be used with the texture that is mapped directly to the pixmap.
+    // TODO: Investigate if it's somehow possible to use the pixmap texture directly,
+    // this should improve performance since only less image copy is then needed every frame.
     glGenTextures(1, &pixmap.target_texture_id);
     glBindTexture(GL_TEXTURE_2D, pixmap.target_texture_id);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pixmap.texture_width, pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -304,8 +310,8 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
             //av_packet.dts = av_rescale_q_rnd(av_packet.dts, av_codec_context->time_base, stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
             //av_packet.duration = 60;//av_rescale_q(av_packet->duration, av_codec_context->time_base, stream->time_base);
             av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
-            av_packet.pts /= 2;
-            av_packet.dts /= 2;
+            //av_packet.pts /= 2;
+            //av_packet.dts /= 2;
             av_packet.stream_index = stream->index;
             //av_packet->stream_index = 0;
 
@@ -335,7 +341,7 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream, A
 }
 #endif
 
-static AVStream* add_stream(AVFormatContext *av_format_context, AVCodec **codec, enum AVCodecID codec_id) {
+static AVStream* add_stream(AVFormatContext *av_format_context, AVCodec **codec, enum AVCodecID codec_id, const WindowPixmap &window_pixmap) {
     //*codec = avcodec_find_encoder(codec_id);
     *codec = avcodec_find_encoder_by_name("h264_nvenc");
     if(!*codec) {
@@ -361,10 +367,10 @@ static AVStream* add_stream(AVFormatContext *av_format_context, AVCodec **codec,
         }
         case AVMEDIA_TYPE_VIDEO: {
             codec_context->codec_id = codec_id;
-            codec_context->bit_rate = 4000000;
+            codec_context->bit_rate = 8000000;
             // Resolution must be a multiple of two
-            codec_context->width = 1920;
-            codec_context->height = 1080;
+            codec_context->width = window_pixmap.texture_width & ~1;
+            codec_context->height = window_pixmap.texture_height & ~1;
             // Timebase: This is the fundamental unit of time (in seconds) in terms of
             // which frame timestamps are represented. For fixed-fps content,
             // timebase should be 1/framerate and timestamp increments should be identical to 1
@@ -519,7 +525,7 @@ int main(int argc, char **argv) {
     }
 
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
+    glfwSwapInterval(0);
 
     glewExperimental = GL_TRUE;
 	GLenum nGlewError = glewInit();
@@ -549,7 +555,7 @@ int main(int argc, char **argv) {
 
     AVOutputFormat *output_format = av_format_context->oformat;
     AVCodec *video_codec;
-    AVStream *video_stream = add_stream(av_format_context, &video_codec, output_format->video_codec);
+    AVStream *video_stream = add_stream(av_format_context, &video_codec, output_format->video_codec, window_pixmap);
     if(!video_stream) {
         fprintf(stderr, "Error: Failed to create video stream\n");
         return 1;
