@@ -80,5 +80,5 @@ int sound_device_read_next_chunk(SoundDevice *device, char **buffer) {
         fprintf(stderr, "short read, read %d frames\n", rc);
     }
     *buffer = device->buffer;
-    return rc;
+    return 0;
 }

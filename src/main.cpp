@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 #define GLX_GLXEXT_PROTOTYPES
 #include <GL/glew.h>
@@ -152,7 +153,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     GL_NEAREST); // GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
     glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    printf("texture width: %d, height: %d\n", pixmap.texture_width,
+    fprintf(stderr, "texture width: %d, height: %d\n", pixmap.texture_width,
            pixmap.texture_height);
 
     // Generating this second texture is needed because
@@ -167,12 +168,12 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
                  pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glGenerateMipmap(GL_TEXTURE_2D);
     int err2 = glGetError();
-    printf("error: %d\n", err2);
+    fprintf(stderr, "error: %d\n", err2);
     glCopyImageSubData(pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
                        pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
                        pixmap.texture_width, pixmap.texture_height, 1);
     int err = glGetError();
-    printf("error: %d\n", err);
+    fprintf(stderr, "error: %d\n", err);
     // glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
     // glGenerateTextureMipmapEXT(glxpixmap, GL_TEXTURE_2D);
 
@@ -205,7 +206,7 @@ std::vector<std::string> get_hardware_acceleration_device_names() {
     cuDeviceGet(&cuDevice, iGpu);
     char deviceName[80];
     cuDeviceGetName(deviceName, sizeof(deviceName), cuDevice);
-    printf("device name: %s\n", deviceName);
+    fprintf(stderr, "device name: %s\n", deviceName);
     return {deviceName};
 }
 
@@ -221,18 +222,20 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
             av_packet_rescale_ts(&av_packet, av_codec_context->time_base,
                                  stream->time_base);
             av_packet.stream_index = stream->index;
-            if (av_write_frame(av_format_context, &av_packet) < 0) {
+            // Write the encoded video frame to disk
+            // av_write_frame(av_format_context, &av_packet)
+            if (write(STDOUT_FILENO, av_packet.data, av_packet.size) < 0) {
                 fprintf(stderr, "Error: Failed to write frame to muxer\n");
             }
             // av_packet_unref(&av_packet);
         } else if (res == AVERROR(EAGAIN)) { // we have no packet
-                                             // printf("No packet!\n");
+                                             // fprintf(stderr, "No packet!\n");
             break;
         } else if (res == AVERROR_EOF) { // this is the end of the stream
-            printf("End of stream!\n");
+            fprintf(stderr, "End of stream!\n");
             break;
         } else {
-            printf("Unexpected error: %d\n", res);
+            fprintf(stderr, "Unexpected error: %d\n", res);
             break;
         }
     }
@@ -275,7 +278,8 @@ static AVStream *add_stream(AVFormatContext *av_format_context, AVCodec **codec,
     }
     case AVMEDIA_TYPE_VIDEO: {
         codec_context->codec_id = codec_id;
-        codec_context->bit_rate = 8000000;
+        // TODO: Scale bitrate by resolution. For 4k, 8000000 is a better value
+        codec_context->bit_rate = 5000000;
         // Resolution must be a multiple of two
         codec_context->width = window_pixmap.texture_width & ~1;
         codec_context->height = window_pixmap.texture_height & ~1;
@@ -290,7 +294,7 @@ static AVStream *add_stream(AVFormatContext *av_format_context, AVCodec **codec,
         codec_context->sample_aspect_ratio.num = 1;
         codec_context->sample_aspect_ratio.den = 1;
         codec_context->gop_size =
-            12; // Emit one intra frame every twelve frames at most
+            32; // Emit one intra frame every 32 frames at most
         codec_context->pix_fmt = AV_PIX_FMT_CUDA;
         if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
             codec_context->mb_decision = 2;
@@ -399,12 +403,13 @@ static void close_video(AVStream *video_stream, AVFrame *frame) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: hardware-screen-recorder <window_id>\n");
+    if (argc < 3) {
+        fprintf(stderr, "usage: hardware-screen-recorder <window_id> <output_file>\n");
         return 1;
     }
 
     Window src_window_id = strtol(argv[1], nullptr, 0);
+    const char *filename = argv[2];
 
     Display *dpy = XOpenDisplay(nullptr);
     if (!dpy) {
@@ -468,8 +473,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    const char *filename = "test_video.mp4";
-
     // Video start
     AVFormatContext *av_format_context;
     // The output format is automatically guessed by the file extension
@@ -478,7 +481,7 @@ int main(int argc, char **argv) {
     if (!av_format_context) {
         fprintf(
             stderr,
-            "Error: Failed to deduce output format from file extension .mp4\n");
+            "Error: Failed to deduce output format from file extension\n");
         return 1;
     }
 
@@ -591,12 +594,12 @@ int main(int argc, char **argv) {
 
         if (XCheckTypedEvent(dpy, ConfigureNotify, &e)) {
             // Window resize
-            printf("Resize window!\n");
+            fprintf(stderr, "Resize window!\n");
             recreate_window_pixmap(dpy, src_window_id, window_pixmap);
         }
 
         if (XCheckTypedEvent(dpy, damage_event + XDamageNotify, &e)) {
-            // printf("Redraw!\n");
+            // fprintf(stderr, "Redraw!\n");
             XDamageNotifyEvent *de = (XDamageNotifyEvent *)&e;
             // de->drawable is the window ID of the damaged window
             XserverRegion region = XFixesCreateRegion(dpy, nullptr, 0);
@@ -611,7 +614,7 @@ int main(int argc, char **argv) {
                 window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
                 window_pixmap.texture_width, window_pixmap.texture_height, 1);
             // int err = glGetError();
-            // printf("error: %d\n", err);
+            // fprintf(stderr, "error: %d\n", err);
 
             CUDA_MEMCPY2D memcpy_struct;
             memcpy_struct.srcXInBytes = 0;
@@ -639,7 +642,7 @@ int main(int argc, char **argv) {
         double frame_timer_elapsed = time_now - frame_timer_start;
         double elapsed = time_now - start_time;
         if (elapsed >= 1.0) {
-            printf("fps: %d\n", fps);
+            fprintf(stderr, "fps: %d\n", fps);
             start_time = time_now;
             current_fps = fps;
             fps = 0;
@@ -650,15 +653,17 @@ int main(int argc, char **argv) {
             frame_timer_start = time_now - frame_time_overflow;
             frame->pts = frame_count;
             frame_count += 1;
-            if (avcodec_send_frame(video_stream->codec, frame) < 0) {
-                fprintf(stderr, "Error: avcodec_send_frame failed\n");
-            } else {
+            if (avcodec_send_frame(video_stream->codec, frame) >= 0) {
                 receive_frames(video_stream->codec, video_stream,
                                av_format_context);
+            } else {
+                fprintf(stderr, "Error: avcodec_send_frame failed\n");
             }
         }
 
         // av_frame_free(&frame);
+
+        usleep(5000);
     }
 
     if (av_write_trailer(av_format_context) != 0) {
