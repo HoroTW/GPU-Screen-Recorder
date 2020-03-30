@@ -1,5 +1,5 @@
 # Hardware screen recorder
-This is a screen recorder that has minimal impact on system performance by doing recording a window using the GPU only,
+This is a screen recorder that has minimal impact on system performance by recording a window using the GPU only,
 similar to shadowplay on windows.
 
 This project is still early in development.
