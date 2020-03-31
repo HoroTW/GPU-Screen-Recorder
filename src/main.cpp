@@ -63,6 +63,31 @@ static bool x11_supports_composite_named_window_pixmap(Display *dpy) {
            (major_version > 0 || minor_version >= 2);
 }
 
+static int x11_error_handler(Display *dpy, XErrorEvent *ev) {
+    char type_str[128];
+    XGetErrorText(dpy, ev->type, type_str, sizeof(type_str));
+
+    char major_opcode_str[128];
+    XGetErrorText(dpy, ev->type, major_opcode_str, sizeof(major_opcode_str));
+
+    char minor_opcode_str[128];
+    XGetErrorText(dpy, ev->type, minor_opcode_str, sizeof(minor_opcode_str));
+
+    fprintf(stderr,
+        "X Error of failed request:  %s\n"
+        "Major opcode of failed request:  %d (%s)\n"
+        "Minor opcode of failed request:  %d (%s)\n"
+        "Serial number of failed request:  %d\n",
+            type_str,
+            ev->request_code, major_opcode_str,
+            ev->minor_code, minor_opcode_str);
+    return 0;
+}
+
+static int x11_io_error_handler(Display *dpy) {
+    return 0;
+}
+
 static void cleanup_window_pixmap(Display *dpy, WindowPixmap &pixmap) {
     if (pixmap.target_texture_id) {
         glDeleteTextures(1, &pixmap.target_texture_id);
@@ -467,6 +492,12 @@ int main(int argc, char **argv) {
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(0);
+
+#define DEBUG
+#if defined(DEBUG)
+    XSetErrorHandler(x11_error_handler);
+    XSetIOErrorHandler(x11_io_error_handler);
+#endif
 
     glewExperimental = GL_TRUE;
     GLenum nGlewError = glewInit();
