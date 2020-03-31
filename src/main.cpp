@@ -224,7 +224,8 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
             av_packet.stream_index = stream->index;
             // Write the encoded video frame to disk
             // av_write_frame(av_format_context, &av_packet)
-            if (write(STDOUT_FILENO, av_packet.data, av_packet.size) < 0) {
+            // write(STDOUT_FILENO, av_packet.data, av_packet.size)
+            if (av_write_frame(av_format_context, &av_packet) < 0) {
                 fprintf(stderr, "Error: Failed to write frame to muxer\n");
             }
             // av_packet_unref(&av_packet);
@@ -417,6 +418,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    const char *filename = "/dev/stdout";
+
     const float target_fps = 1.0f / (float)fps;
 
     Display *dpy = XOpenDisplay(nullptr);
@@ -513,7 +516,23 @@ int main(int argc, char **argv) {
     open_video(video_codec, video_stream, window_pixmap, &device_ctx,
                &cuda_graphics_resource);
 
-    output_format->flags = AVFMT_NOFILE;
+    av_dump_format(av_format_context, 0, filename, 1);
+
+    if (!(output_format->flags & AVFMT_NOFILE)) {
+        int ret = avio_open(&av_format_context->pb, filename, AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            fprintf(stderr, "Error: Could not open '%s': %s\n", filename,
+                    "blabla"); // av_err2str(ret));
+            return 1;
+        }
+    }
+
+    int ret = avformat_write_header(av_format_context, nullptr);
+    if (ret < 0) {
+        fprintf(stderr, "Error occurred when opening output file: %s\n",
+                "blabla"); // av_err2str(ret));
+        return 1;
+    }
 
     AVHWDeviceContext *hw_device_context =
         (AVHWDeviceContext *)device_ctx->data;
@@ -666,15 +685,21 @@ int main(int argc, char **argv) {
         usleep(5000);
     }
 
+    if (av_write_trailer(av_format_context) != 0) {
+        fprintf(stderr, "Failed to write trailer\n");
+    }
+
     /* add sequence end code to have a real MPEG file */
+    /*
     const uint8_t endcode[] = { 0, 0, 1, 0xb7 };
     if (video_codec->id == AV_CODEC_ID_MPEG1VIDEO || video_codec->id == AV_CODEC_ID_MPEG2VIDEO)
         write(STDOUT_FILENO, endcode, sizeof(endcode));
+    */
 
     // close_video(video_stream, NULL);
 
-    // if(!(output_format->flags & AVFMT_NOFILE))
-    //    avio_close(av_format_context->pb);
+     if(!(output_format->flags & AVFMT_NOFILE))
+        avio_close(av_format_context->pb);
     // avformat_free_context(av_format_context);
     // XDamageDestroy(dpy, xdamage);
 
