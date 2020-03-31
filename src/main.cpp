@@ -102,8 +102,8 @@ static void cleanup_window_pixmap(Display *dpy, WindowPixmap &pixmap) {
     }
 
     if (pixmap.glx_pixmap) {
-        glXReleaseTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT);
         glXDestroyPixmap(dpy, pixmap.glx_pixmap);
+        glXReleaseTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT);
         pixmap.glx_pixmap = None;
     }
 
@@ -415,10 +415,12 @@ static void open_video(AVCodec *codec, AVStream *stream,
         CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
     // cuGraphicsUnregisterResource(*cuda_graphics_resource);
     if (res != CUDA_SUCCESS) {
+        const char *err_str;
+        cuGetErrorString(res, &err_str);
         fprintf(stderr,
-                "Error: cuGraphicsGLRegisterImage failed, error %d, texture "
+                "Error: cuGraphicsGLRegisterImage failed, error %s, texture "
                 "id: %u\n",
-                res, window_pixmap.target_texture_id);
+                err_str, window_pixmap.target_texture_id);
         exit(1);
     }
     res = cuCtxPopCurrent(&old_ctx);
@@ -445,7 +447,7 @@ int main(int argc, char **argv) {
 
     const char *filename = "/dev/stdout";
 
-    const float target_fps = 1.0f / (float)fps;
+    const double target_fps = 1.0f / (double)fps;
 
     Display *dpy = XOpenDisplay(nullptr);
     if (!dpy) {
@@ -480,6 +482,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
     GLFWwindow *window =
@@ -493,7 +499,6 @@ int main(int argc, char **argv) {
     glfwMakeContextCurrent(window);
     glfwSwapInterval(0);
 
-#define DEBUG
 #if defined(DEBUG)
     XSetErrorHandler(x11_error_handler);
     XSetIOErrorHandler(x11_io_error_handler);
@@ -611,6 +616,8 @@ int main(int argc, char **argv) {
 
     double start_time = glfwGetTime();
     double frame_timer_start = start_time;
+    double window_resize_timer = start_time;
+    bool window_resized = true;
     int fps_counter = 0;
     int current_fps = 30;
 
@@ -623,8 +630,7 @@ int main(int argc, char **argv) {
     frame->width = video_stream->codec->width;
     frame->height = video_stream->codec->height;
 
-    if (av_hwframe_get_buffer(video_stream->codec->hw_frames_ctx, frame, 0) <
-        0) {
+    if (av_hwframe_get_buffer(video_stream->codec->hw_frames_ctx, frame, 0) < 0) {
         fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
         exit(1);
     }
@@ -645,8 +651,8 @@ int main(int argc, char **argv) {
             if(e.xconfigure.width != window_width || e.xconfigure.height != window_height) {
                 window_width = e.xconfigure.width;
                 window_height = e.xconfigure.height;
-                fprintf(stderr, "Resize window!\n");
-                recreate_window_pixmap(dpy, src_window_id, window_pixmap);
+                window_resize_timer = glfwGetTime();
+                window_resized = false;
             }
         }
 
@@ -696,6 +702,41 @@ int main(int argc, char **argv) {
             start_time = time_now;
             current_fps = fps_counter;
             fps_counter = 0;
+        }
+
+        const double window_resize_timeout = 1.0; // 1 second
+        if(!window_resized && time_now - window_resize_timer >= window_resize_timeout) {
+            window_resized = true;
+            fprintf(stderr, "Resize window!\n");
+            recreate_window_pixmap(dpy, src_window_id, window_pixmap);
+            // Resolution must be a multiple of two
+            video_stream->codec->width = window_pixmap.texture_width & ~1;
+            video_stream->codec->height = window_pixmap.texture_height & ~1;
+
+            cuGraphicsUnregisterResource(cuda_graphics_resource);
+            res = cuGraphicsGLRegisterImage(
+                &cuda_graphics_resource, window_pixmap.target_texture_id, GL_TEXTURE_2D,
+                CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
+            if (res != CUDA_SUCCESS) {
+                const char *err_str;
+                cuGetErrorString(res, &err_str);
+                fprintf(stderr,
+                        "Error: cuGraphicsGLRegisterImage failed, error %s, texture "
+                        "id: %u\n",
+                        err_str, window_pixmap.target_texture_id);
+                exit(1);
+            }
+
+            res = cuGraphicsResourceSetMapFlags(
+                cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
+            res = cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
+            res = cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
+
+            av_frame_unref(frame);
+            if (av_hwframe_get_buffer(video_stream->codec->hw_frames_ctx, frame, 0) < 0) {
+                fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
+                exit(1);
+            }
         }
 
         double frame_time_overflow = frame_timer_elapsed - target_fps;

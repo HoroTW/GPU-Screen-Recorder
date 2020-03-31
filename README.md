@@ -12,7 +12,7 @@ the fps remains at 30.
 X11, Nvidia (cuda)
 
 # TODO
-* Support resizing the target window! right now that crashes the recorder.
+* Scale video when the window is rescaled.
 * Use the sound source in src/sound.cpp to record audio and mux it with ffmpeg to the final video.
 * Support AMD and Intel, using VAAPI. cuda and vaapi should be loaded at runtime using dlopen instead of linking to those
 libraries at compile-time.
