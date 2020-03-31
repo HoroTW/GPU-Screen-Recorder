@@ -244,7 +244,8 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
 
 static AVStream *add_stream(AVFormatContext *av_format_context, AVCodec **codec,
                             enum AVCodecID codec_id,
-                            const WindowPixmap &window_pixmap) {
+                            const WindowPixmap &window_pixmap,
+                            int fps) {
     //*codec = avcodec_find_encoder(codec_id);
     *codec = avcodec_find_encoder_by_name("h264_nvenc");
     if (!*codec) {
@@ -288,7 +289,7 @@ static AVStream *add_stream(AVFormatContext *av_format_context, AVCodec **codec,
         // timebase should be 1/framerate and timestamp increments should be
         // identical to 1
         codec_context->time_base.num = 1;
-        codec_context->time_base.den = 60;
+        codec_context->time_base.den = fps;
         // codec_context->framerate.num = 60;
         // codec_context->framerate.den = 1;
         codec_context->sample_aspect_ratio.num = 1;
@@ -403,13 +404,20 @@ static void close_video(AVStream *video_stream, AVFrame *frame) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) {
-        fprintf(stderr, "usage: hardware-screen-recorder <window_id> <output_file>\n");
+    if (argc < 4) {
+        fprintf(stderr, "usage: hardware-screen-recorder <window_id> <container_format> <fps>\n");
         return 1;
     }
 
     Window src_window_id = strtol(argv[1], nullptr, 0);
-    const char *filename = argv[2];
+    const char *container_format = argv[2];
+    int fps = atoi(argv[3]);
+    if(fps <= 0 || fps > 255) {
+        fprintf(stderr, "invalid fps argument: %s\n", argv[3]);
+        return 1;
+    }
+
+    const float target_fps = 1.0f / (float)fps;
 
     Display *dpy = XOpenDisplay(nullptr);
     if (!dpy) {
@@ -476,8 +484,8 @@ int main(int argc, char **argv) {
     // Video start
     AVFormatContext *av_format_context;
     // The output format is automatically guessed by the file extension
-    avformat_alloc_output_context2(&av_format_context, nullptr, nullptr,
-                                   filename);
+    avformat_alloc_output_context2(&av_format_context, nullptr, container_format,
+                                   nullptr);
     if (!av_format_context) {
         fprintf(
             stderr,
@@ -489,7 +497,7 @@ int main(int argc, char **argv) {
     AVCodec *video_codec;
     AVStream *video_stream =
         add_stream(av_format_context, &video_codec, output_format->video_codec,
-                   window_pixmap);
+                   window_pixmap, fps);
     if (!video_stream) {
         fprintf(stderr, "Error: Failed to create video stream\n");
         return 1;
@@ -504,23 +512,8 @@ int main(int argc, char **argv) {
     CUgraphicsResource cuda_graphics_resource;
     open_video(video_codec, video_stream, window_pixmap, &device_ctx,
                &cuda_graphics_resource);
-    av_dump_format(av_format_context, 0, filename, 1);
 
-    if (!(output_format->flags & AVFMT_NOFILE)) {
-        int ret = avio_open(&av_format_context->pb, filename, AVIO_FLAG_WRITE);
-        if (ret < 0) {
-            fprintf(stderr, "Error: Could not open '%s': %s\n", filename,
-                    "blabla"); // av_err2str(ret));
-            return 1;
-        }
-    }
-
-    int ret = avformat_write_header(av_format_context, nullptr);
-    if (ret < 0) {
-        fprintf(stderr, "Error occurred when opening output file: %s\n",
-                "blabla"); // av_err2str(ret));
-        return 1;
-    }
+    output_format->flags = AVFMT_NOFILE;
 
     AVHWDeviceContext *hw_device_context =
         (AVHWDeviceContext *)device_ctx->data;
@@ -568,7 +561,7 @@ int main(int argc, char **argv) {
 
     double start_time = glfwGetTime();
     double frame_timer_start = start_time;
-    int fps = 0;
+    int fps_counter = 0;
     int current_fps = 30;
 
     AVFrame *frame = av_frame_alloc();
@@ -634,18 +627,16 @@ int main(int argc, char **argv) {
             // res = cuCtxPopCurrent(&old_ctx);
         }
 
-        ++fps;
-
-        const double target_fps = 0.0166666666;
+        ++fps_counter;
 
         double time_now = glfwGetTime();
         double frame_timer_elapsed = time_now - frame_timer_start;
         double elapsed = time_now - start_time;
         if (elapsed >= 1.0) {
-            fprintf(stderr, "fps: %d\n", fps);
+            fprintf(stderr, "fps: %d\n", fps_counter);
             start_time = time_now;
-            current_fps = fps;
-            fps = 0;
+            current_fps = fps_counter;
+            fps_counter = 0;
         }
 
         double frame_time_overflow = frame_timer_elapsed - target_fps;
@@ -666,9 +657,10 @@ int main(int argc, char **argv) {
         usleep(5000);
     }
 
-    if (av_write_trailer(av_format_context) != 0) {
-        fprintf(stderr, "Failed to write trailer\n");
-    }
+    /* add sequence end code to have a real MPEG file */
+    const uint8_t endcode[] = { 0, 0, 1, 0xb7 };
+    if (video_codec->id == AV_CODEC_ID_MPEG1VIDEO || video_codec->id == AV_CODEC_ID_MPEG2VIDEO)
+        write(STDOUT_FILENO, endcode, sizeof(endcode));
 
     // close_video(video_stream, NULL);
 
