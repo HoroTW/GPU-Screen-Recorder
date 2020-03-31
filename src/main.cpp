@@ -579,19 +579,28 @@ int main(int argc, char **argv) {
         exit(1);
     }
 
+    XWindowAttributes xwa;
+    XGetWindowAttributes(dpy, src_window_id, &xwa);
+    int window_width = xwa.width;
+    int window_height = xwa.height;
+
     XEvent e;
     while (!glfwWindowShouldClose(window)) {
         glClear(GL_COLOR_BUFFER_BIT);
         glfwSwapBuffers(window);
         glfwPollEvents();
 
-        if (XCheckTypedEvent(dpy, ConfigureNotify, &e)) {
+        if (XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e) && e.xconfigure.window == src_window_id) {
             // Window resize
-            fprintf(stderr, "Resize window!\n");
-            recreate_window_pixmap(dpy, src_window_id, window_pixmap);
+            if(e.xconfigure.width != window_width || e.xconfigure.height != window_height) {
+                window_width = e.xconfigure.width;
+                window_height = e.xconfigure.height;
+                fprintf(stderr, "Resize window!\n");
+                recreate_window_pixmap(dpy, src_window_id, window_pixmap);
+            }
         }
 
-        if (XCheckTypedEvent(dpy, damage_event + XDamageNotify, &e)) {
+        if (XCheckTypedWindowEvent(dpy, src_window_id, damage_event + XDamageNotify, &e)) {
             // fprintf(stderr, "Redraw!\n");
             XDamageNotifyEvent *de = (XDamageNotifyEvent *)&e;
             // de->drawable is the window ID of the damaged window
