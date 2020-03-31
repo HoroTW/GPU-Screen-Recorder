@@ -433,7 +433,7 @@ static void close_video(AVStream *video_stream, AVFrame *frame) {
 
 int main(int argc, char **argv) {
     if (argc < 4) {
-        fprintf(stderr, "usage: hardware-screen-recorder <window_id> <container_format> <fps>\n");
+        fprintf(stderr, "usage: gpu-screen-recorder <window_id> <container_format> <fps>\n");
         return 1;
     }
 

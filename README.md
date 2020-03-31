@@ -1,4 +1,4 @@
-# Hardware screen recorder
+# gpu screen recorder
 This is a screen recorder that has minimal impact on system performance by recording a window using the GPU only,
 similar to shadowplay on windows.
 
