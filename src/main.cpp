@@ -462,12 +462,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // TODO: Verify if this is needed
-    int screen_count = ScreenCount(dpy);
-    for (int i = 0; i < screen_count; ++i) {
-        XCompositeRedirectSubwindows(dpy, RootWindow(dpy, i),
-                                     CompositeRedirectAutomatic);
-    }
+    XCompositeRedirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
 
     XWindowAttributes attr;
     if (!XGetWindowAttributes(dpy, src_window_id, &attr)) {
@@ -776,9 +771,6 @@ int main(int argc, char **argv) {
     // XDamageDestroy(dpy, xdamage);
 
     // cleanup_window_pixmap(dpy, window_pixmap);
-    for (int i = 0; i < screen_count; ++i) {
-        XCompositeUnredirectSubwindows(dpy, RootWindow(dpy, i),
-                                       CompositeRedirectAutomatic);
-    }
+    XCompositeUnredirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
     XCloseDisplay(dpy);
 }
