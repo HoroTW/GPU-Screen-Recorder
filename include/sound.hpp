@@ -3,7 +3,7 @@
 
 typedef struct {
     void *handle;
-    char *buffer;
+    void *buffer;
     int buffer_size;
     unsigned int frames;
 } SoundDevice;
@@ -14,14 +14,16 @@ typedef struct {
     to clean up internal resources.
     Returns 0 on success, or a negative value on failure.
 */
-int sound_device_get_by_name(SoundDevice *device, const char *name = "default", unsigned int num_channels = 1, unsigned int period_frame_size = 32);
+int sound_device_get_by_name(SoundDevice *device, const char *name = "default", unsigned int num_channels = 2, unsigned int period_frame_size = 32);
 
 void sound_device_close(SoundDevice *device);
 
 /*
     Returns the next chunk of audio into @buffer.
-    Returns the size of the buffer, or a negative value on failure.
+    Returns the number of frames read, or a negative value on failure.
 */
-int sound_device_read_next_chunk(SoundDevice *device, char **buffer);
+int sound_device_read_next_chunk(SoundDevice *device, void **buffer);
+
+int sound_device_get_buffer_size(SoundDevice *device);
 
 #endif /* GPU_SCREEN_RECORDER_H */

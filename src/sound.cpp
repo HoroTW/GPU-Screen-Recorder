@@ -26,8 +26,8 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
     snd_pcm_hw_params_set_format(handle, params, SND_PCM_FORMAT_S16_LE);
     snd_pcm_hw_params_set_channels(handle, params, num_channels);
 
-    // 44100 bits/second samling rate (CD quality)
-    unsigned int val = 44100;
+    // 48000 bits/second samling rate (DVD quality)
+    unsigned int val = 48000;
     int dir;
     snd_pcm_hw_params_set_rate_near(handle, params, &val, &dir);
 
@@ -45,7 +45,7 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
     // Use a buffer large enough to hold one period
     snd_pcm_hw_params_get_period_size(params, &frames, &dir);
     int buffer_size = frames * 2 * num_channels; // 2 bytes/sample, @num_channels channels
-    char *buffer = (char*)malloc(buffer_size);
+    void *buffer = malloc(buffer_size);
     if(!buffer) {
         fprintf(stderr, "failed to allocate buffer for audio\n");
         snd_pcm_close(handle);
@@ -61,18 +61,19 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
 
 void sound_device_close(SoundDevice *device) {
     /* TODO: Is this also needed in @sound_device_get_by_name on failure? */
-    snd_pcm_drain((snd_pcm_t*)device->handle);
+    // TODO: This has been commented out since it causes the thread to block forever. Why?
+    //snd_pcm_drain((snd_pcm_t*)device->handle);
     snd_pcm_close((snd_pcm_t*)device->handle);
     free(device->buffer);
 }
 
-int sound_device_read_next_chunk(SoundDevice *device, char **buffer) {
+int sound_device_read_next_chunk(SoundDevice *device, void **buffer) {
     int rc = snd_pcm_readi((snd_pcm_t*)device->handle, device->buffer, device->frames);
     if (rc == -EPIPE) {
         /* overrun */
         fprintf(stderr, "overrun occured\n");
         snd_pcm_prepare((snd_pcm_t*)device->handle);
-        return 0;
+        return rc;
     } else if(rc < 0) {
         fprintf(stderr, "failed to read from sound device, reason: %s\n", snd_strerror(rc));
         return rc;
@@ -80,5 +81,9 @@ int sound_device_read_next_chunk(SoundDevice *device, char **buffer) {
         fprintf(stderr, "short read, read %d frames\n", rc);
     }
     *buffer = device->buffer;
-    return 0;
+    return rc;
+}
+
+int sound_device_get_buffer_size(SoundDevice *device) {
+    return device->buffer_size;
 }
