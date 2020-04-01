@@ -8,6 +8,9 @@ This project is still early in development.
 When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however when using this screen recorder
 the fps remains at 30.
 
+# Example
+`gpu-screen-recorder 0x1c00001 mp4 60 > test_video.mp4`
+
 # Requirements
 X11, Nvidia (cuda)
 
