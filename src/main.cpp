@@ -160,7 +160,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     pixmap.pixmap = new_window_pixmap;
     pixmap.glx_pixmap = glx_pixmap;
 
-    glEnable(GL_TEXTURE_2D);
+    //glEnable(GL_TEXTURE_2D);
     glGenTextures(1, &pixmap.texture_id);
     glBindTexture(GL_TEXTURE_2D, pixmap.texture_id);
 
@@ -177,7 +177,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
                     GL_NEAREST); // GL_LINEAR );
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     GL_NEAREST); // GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
-    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    //glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     fprintf(stderr, "texture width: %d, height: %d\n", pixmap.texture_width,
            pixmap.texture_height);
 
