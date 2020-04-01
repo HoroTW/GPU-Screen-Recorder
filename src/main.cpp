@@ -253,7 +253,7 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
             if (av_write_frame(av_format_context, &av_packet) < 0) {
                 fprintf(stderr, "Error: Failed to write frame to muxer\n");
             }
-            // av_packet_unref(&av_packet);
+            av_packet_unref(&av_packet);
         } else if (res == AVERROR(EAGAIN)) { // we have no packet
                                              // fprintf(stderr, "No packet!\n");
             break;
@@ -265,7 +265,7 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
             break;
         }
     }
-    av_packet_unref(&av_packet);
+    //av_packet_unref(&av_packet);
 }
 
 static AVStream *add_stream(AVFormatContext *av_format_context, AVCodec **codec,
