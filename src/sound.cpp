@@ -3,6 +3,55 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#ifdef PULSEAUDIO
+#include <pulse/simple.h>
+#include <pulse/error.h>
+
+int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int num_channels, unsigned int period_frame_size) {
+    pa_sample_spec ss;
+    ss.format = PA_SAMPLE_S16LE;
+    ss.rate = 48000;
+    ss.channels = num_channels;
+    int error;
+
+    pa_simple *pa_handle = pa_simple_new(nullptr, "gpu-screen-recorder", PA_STREAM_RECORD, name, "record", &ss, nullptr, nullptr, &error);
+    if(!pa_handle) {
+        fprintf(stderr, "pa_simple_new() failed: %s\n", pa_strerror(error));
+        return -1;
+    }
+
+    int buffer_size = period_frame_size * 2 * num_channels; // 2 bytes/sample, @num_channels channels
+    void *buffer = malloc(buffer_size);
+    if(!buffer) {
+        fprintf(stderr, "failed to allocate buffer for audio\n");
+        pa_simple_free(pa_handle);
+        return -1;
+    }
+
+    fprintf(stderr, "Using pulseaudio\n");
+
+    device->handle = pa_handle;
+    device->buffer = buffer;
+    device->buffer_size = buffer_size;
+    device->frames = period_frame_size;
+    return 0;
+}
+
+void sound_device_close(SoundDevice *device) {
+    pa_simple_free((pa_simple*)device->handle);
+    free(device->buffer);
+}
+
+int sound_device_read_next_chunk(SoundDevice *device, void **buffer) {
+    int error;
+    if(pa_simple_read((pa_simple*)device->handle, device->buffer, device->buffer_size, &error) < 0) {
+        fprintf(stderr, "pa_simple_read() failed: %s\n", pa_strerror(error));
+        return -1;
+    }
+    *buffer = device->buffer;
+    return device->frames;
+}
+#else
 #define ALSA_PCM_NEW_HW_PARAMS_API
 #include <alsa/asoundlib.h>
 
@@ -52,7 +101,9 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
         return -1;
     }
 
-    device->handle = (void*)handle;
+    fprintf(stderr, "Using alsa\n");
+
+    device->handle = handle;
     device->buffer = buffer;
     device->buffer_size = buffer_size;
     device->frames = frames;
@@ -83,7 +134,4 @@ int sound_device_read_next_chunk(SoundDevice *device, void **buffer) {
     *buffer = device->buffer;
     return rc;
 }
-
-int sound_device_get_buffer_size(SoundDevice *device) {
-    return device->buffer_size;
-}
+#endif

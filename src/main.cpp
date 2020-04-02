@@ -5,6 +5,7 @@
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <map>
 
 #include <unistd.h>
 
@@ -503,17 +504,46 @@ static void close_video(AVStream *video_stream, AVFrame *frame) {
     // av_frame_free(&frame);
 }
 
+static void usage() {
+    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> -a <audio_input>\n");
+    exit(1);
+}
+
 int main(int argc, char **argv) {
-    if (argc < 4) {
-        fprintf(stderr, "usage: gpu-screen-recorder <window_id> <container_format> <fps>\n");
-        return 1;
+    std::map<std::string, std::string> args = {
+        { "-w", "" },
+        { "-c", "" },
+        { "-f", "" },
+        { "-a", "" },
+    };
+
+    for(int i = 1; i < argc; i += 2) {
+        bool valid_arg = false;
+        for(auto &it : args) {
+            if(strcmp(argv[i], it.first.c_str()) == 0) {
+                it.second = argv[i + 1];
+                valid_arg = true;
+            }
+        }
+
+        if(!valid_arg) {
+            fprintf(stderr, "Invalid argument '%s'\n", argv[i]);
+            usage();
+        }
     }
 
-    Window src_window_id = strtol(argv[1], nullptr, 0);
-    const char *container_format = argv[2];
-    int fps = atoi(argv[3]);
+    for(auto &it : args) {
+        if(it.second.empty()) {
+            fprintf(stderr, "Missing argument '%s'\n", it.first.c_str());
+            usage();
+        }
+    }
+
+    Window src_window_id = strtol(args["-w"].c_str(), nullptr, 0);
+    const char *container_format = args["-c"].c_str();
+    int fps = atoi(args["-f"].c_str());
     if(fps <= 0 || fps > 255) {
-        fprintf(stderr, "invalid fps argument: %s\n", argv[3]);
+        fprintf(stderr, "invalid fps argument: %s\n", args["-f"].c_str());
         return 1;
     }
 
@@ -550,7 +580,7 @@ int main(int argc, char **argv) {
     }
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
@@ -719,7 +749,7 @@ int main(int argc, char **argv) {
     int window_height = xwa.height;
 
     SoundDevice sound_device;
-    if(sound_device_get_by_name(&sound_device, "pulse", audio_stream->codec->channels, audio_stream->codec->frame_size) != 0) {
+    if(sound_device_get_by_name(&sound_device, args["-a"].c_str(), audio_stream->codec->channels, audio_stream->codec->frame_size) != 0) {
         fprintf(stderr, "failed to get 'pulse' sound device\n");
         exit(1);
     }

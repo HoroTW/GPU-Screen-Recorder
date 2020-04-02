@@ -24,6 +24,4 @@ void sound_device_close(SoundDevice *device);
 */
 int sound_device_read_next_chunk(SoundDevice *device, void **buffer);
 
-int sound_device_get_buffer_size(SoundDevice *device);
-
 #endif /* GPU_SCREEN_RECORDER_H */
