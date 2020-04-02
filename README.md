@@ -14,7 +14,7 @@ the fps remains at 30.
 `gpu-screen-recorder 0x1c00001 mp4 60 > test_video.mp4`
 
 # Requirements
-X11, Nvidia (cuda), pulseaudio
+X11, Nvidia (cuda), alsa or pulseaudio
 
 # TODO
 * Scale video when the window is rescaled.
