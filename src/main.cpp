@@ -523,6 +523,7 @@ int main(int argc, char **argv) {
             if(strcmp(argv[i], it.first.c_str()) == 0) {
                 it.second = argv[i + 1];
                 valid_arg = true;
+                break;
             }
         }
 
@@ -564,13 +565,13 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    XCompositeRedirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
-
     XWindowAttributes attr;
     if (!XGetWindowAttributes(dpy, src_window_id, &attr)) {
         fprintf(stderr, "Error: Invalid window id: %lu\n", src_window_id);
         return 1;
     }
+
+    XCompositeRedirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
 
     // glXMakeContextCurrent(Display *dpy, GLXDrawable draw, GLXDrawable read,
     // GLXContext ctx)
