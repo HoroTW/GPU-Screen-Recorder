@@ -743,7 +743,7 @@ int main(int argc, char **argv) {
     double start_time = glfwGetTime();
     double frame_timer_start = start_time;
     double window_resize_timer = start_time;
-    bool window_resized = true;
+    bool window_resized = false;
     int fps_counter = 0;
     int current_fps = 30;
 
@@ -841,7 +841,7 @@ int main(int argc, char **argv) {
                 window_width = e.xconfigure.width;
                 window_height = e.xconfigure.height;
                 window_resize_timer = glfwGetTime();
-                window_resized = false;
+                window_resized = true;
             }
         }
 
@@ -894,13 +894,13 @@ int main(int argc, char **argv) {
         }
 
         const double window_resize_timeout = 1.0; // 1 second
-        if(!window_resized && time_now - window_resize_timer >= window_resize_timeout) {
-            window_resized = true;
+        if(window_resized && time_now - window_resize_timer >= window_resize_timeout) {
+            window_resized = false;
             fprintf(stderr, "Resize window!\n");
             recreate_window_pixmap(dpy, src_window_id, window_pixmap);
             // Resolution must be a multiple of two
-            video_stream->codec->width = window_pixmap.texture_width & ~1;
-            video_stream->codec->height = window_pixmap.texture_height & ~1;
+            //video_stream->codec->width = window_pixmap.texture_width & ~1;
+            //video_stream->codec->height = window_pixmap.texture_height & ~1;
 
             cuGraphicsUnregisterResource(cuda_graphics_resource);
             res = cuGraphicsGLRegisterImage(
