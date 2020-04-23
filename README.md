@@ -10,6 +10,9 @@ This project is still early in development.
 When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however when using this screen recorder
 the fps remains at 30.
 
+# Installation
+gpu screen recorder can be built using [sibs](https://github.com/DEC05EBA/sibs) or if you are running Arch Linux, then you can find it on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).
+
 # Example
 Run `interactive.sh` or run `gpu-screen-recorder -w 0x1c00001 -c mp4 -f 60 -a bluez_sink.00_18_09_8A_07_93.a2dp_sink.monitor > test_video.mp4`
 
