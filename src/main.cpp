@@ -154,6 +154,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
         GLX_BIND_TO_TEXTURE_RGBA_EXT, True, GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT,
         GLX_BIND_TO_TEXTURE_TARGETS_EXT, GLX_TEXTURE_2D_BIT_EXT,
         GLX_BIND_TO_MIPMAP_TEXTURE_EXT, True, GLX_DOUBLEBUFFER, False,
+        GLX_ALPHA_SIZE, 8,
         // GLX_Y_INVERTED_EXT, (int)GLX_DONT_CARE,
         None};
 
