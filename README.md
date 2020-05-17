@@ -22,6 +22,13 @@ Run `interactive.sh` or run `gpu-screen-recorder -w 0x1c00001 -c mp4 -f 60 -a bl
 # Requirements
 X11, Nvidia (cuda), alsa or pulseaudio
 
+# FAQ
+## How is this different from using OBS with nvenc?
+OBS only uses the gpu for video encoding, but the window image that is encoded is sent from the GPU to the CPU and then back to the GPU. These operations are very slow and causes all of the fps drops when using OBS. OBS only uses the GPU efficiently on Windows 10 and Nvidia.\
+This gpu-screen-recorder keeps the window image on the GPU and sends it directly to the video encoding unit on the GPU by using CUDA. This means that CPU usage remains at around 0% when using this screen recorder.
+## How is this different from using FFMPEG with x11grab and nvenc?
+FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to an output video, and not when recording the screen when using x11grab. So FFMPEG has the same fps drop issues that OBS has.
+
 # TODO
 * Scale video when the window is rescaled.
 * Support AMD and Intel, using VAAPI. cuda and vaapi should be loaded at runtime using dlopen instead of linking to those
