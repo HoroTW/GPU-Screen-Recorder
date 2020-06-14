@@ -151,9 +151,11 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     cleanup_window_pixmap(dpy, pixmap);
 
     const int pixmap_config[] = {
-        GLX_BIND_TO_TEXTURE_RGBA_EXT, True, GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT,
+        GLX_BIND_TO_TEXTURE_RGBA_EXT, True,
+        GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT | GLX_WINDOW_BIT,
         GLX_BIND_TO_TEXTURE_TARGETS_EXT, GLX_TEXTURE_2D_BIT_EXT,
-        GLX_BIND_TO_MIPMAP_TEXTURE_EXT, True, GLX_DOUBLEBUFFER, False,
+        GLX_BIND_TO_MIPMAP_TEXTURE_EXT, True,
+        GLX_DOUBLEBUFFER, False,
         GLX_BUFFER_SIZE, 32,
         GLX_ALPHA_SIZE, 8,
         // GLX_Y_INVERTED_EXT, (int)GLX_DONT_CARE,
@@ -203,7 +205,6 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
-    glGenerateMipmap(GL_TEXTURE_2D);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,
                              &pixmap.texture_width);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT,
@@ -226,7 +227,6 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     glBindTexture(GL_TEXTURE_2D, pixmap.target_texture_id);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pixmap.texture_width,
                  pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    glGenerateMipmap(GL_TEXTURE_2D);
     int err2 = glGetError();
     fprintf(stderr, "error: %d\n", err2);
     glCopyImageSubData(pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
@@ -376,7 +376,7 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     fprintf(stderr, "codec id: %d\n", (*codec)->id);
     codec_context->width = window_pixmap.texture_width & ~1;
     codec_context->height = window_pixmap.texture_height & ~1;
-	codec_context->bit_rate = codec_context->width * codec_context->height; //5000000;
+	codec_context->bit_rate = 5000000 + (codec_context->width * codec_context->height) / 2; //5000000 * ((double)fps / 30.0) + (codec_context->width * codec_context->height) / 2;
     // Timebase: This is the fundamental unit of time (in seconds) in terms
     // of which frame timestamps are represented. For fixed-fps content,
     // timebase should be 1/framerate and timestamp increments should be
@@ -389,6 +389,7 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     codec_context->sample_aspect_ratio.den = 1;
     codec_context->gop_size =
         32; // Emit one intra frame every 32 frames at most
+    codec_context->max_b_frames = 2;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
         codec_context->mb_decision = 2;
@@ -569,7 +570,7 @@ int main(int argc, char **argv) {
 
     const char *filename = "/dev/stdout";
 
-    const double target_fps = 1.0f / (double)fps;
+    const double target_fps = 1.0 / (double)fps;
 
     Display *dpy = XOpenDisplay(nullptr);
     if (!dpy) {
@@ -743,7 +744,7 @@ int main(int argc, char **argv) {
     // res = cuGraphicsUnmapResources(1, &cuda_graphics_resource, 0);
 
     double start_time = glfwGetTime();
-    double frame_timer_start = start_time;
+    double frame_timer_start = start_time - target_fps - 0.001;
     double window_resize_timer = start_time;
     bool window_resized = false;
     int fps_counter = 0;
@@ -784,7 +785,7 @@ int main(int argc, char **argv) {
 	std::mutex write_output_mutex;
 
 	bool running = true;
-	std::thread audio_thread([&running](AVFormatContext *av_format_context, AVStream *audio_stream, AVPacket *audio_packet, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) {
+	std::thread audio_thread([&running](AVFormatContext *av_format_context, AVStream *audio_stream, AVPacket *audio_packet, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
 		SwrContext *swr = swr_alloc();
 		if(!swr) {
 			fprintf(stderr, "Failed to create SwrContext\n");
@@ -831,8 +832,11 @@ int main(int argc, char **argv) {
 		swr_free(&swr);
 	}, av_format_context, audio_stream, &audio_packet, audio_frame_buf, &sound_device, audio_frame, &write_output_mutex);
 
+    bool redraw = true;
     XEvent e;
     while (!glfwWindowShouldClose(window)) {
+        double frame_start = glfwGetTime();
+
         glClear(GL_COLOR_BUFFER_BIT);
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -856,47 +860,11 @@ int main(int argc, char **argv) {
             XDamageSubtract(dpy, de->damage, None, region);
             XFixesDestroyRegion(dpy, region);
 
-            // TODO: Use a framebuffer instead. glCopyImageSubData requires
-            // opengl 4.2
-            glCopyImageSubData(
-                window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-                window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-                window_pixmap.texture_width, window_pixmap.texture_height, 1);
-            // int err = glGetError();
-            // fprintf(stderr, "error: %d\n", err);
-
-            CUDA_MEMCPY2D memcpy_struct;
-            memcpy_struct.srcXInBytes = 0;
-            memcpy_struct.srcY = 0;
-            memcpy_struct.srcMemoryType = CUmemorytype::CU_MEMORYTYPE_ARRAY;
-
-            memcpy_struct.dstXInBytes = 0;
-            memcpy_struct.dstY = 0;
-            memcpy_struct.dstMemoryType = CUmemorytype::CU_MEMORYTYPE_DEVICE;
-
-            memcpy_struct.srcArray = mapped_array;
-            memcpy_struct.dstDevice = (CUdeviceptr)frame->data[0];
-            memcpy_struct.dstPitch = frame->linesize[0];
-            memcpy_struct.WidthInBytes = frame->width * 4;
-            memcpy_struct.Height = frame->height;
-            cuMemcpy2D(&memcpy_struct);
-            // res = cuCtxPopCurrent(&old_ctx);
-        }
-
-        ++fps_counter;
-
-        double time_now = glfwGetTime();
-        double frame_timer_elapsed = time_now - frame_timer_start;
-        double elapsed = time_now - start_time;
-        if (elapsed >= 1.0) {
-            fprintf(stderr, "fps: %d\n", fps_counter);
-            start_time = time_now;
-            current_fps = fps_counter;
-            fps_counter = 0;
+            redraw = true;
         }
 
         const double window_resize_timeout = 1.0; // 1 second
-        if(window_resized && time_now - window_resize_timer >= window_resize_timeout) {
+        if(window_resized && glfwGetTime() - window_resize_timer >= window_resize_timeout) {
             window_resized = false;
             fprintf(stderr, "Resize window!\n");
             recreate_window_pixmap(dpy, src_window_id, window_pixmap);
@@ -930,9 +898,51 @@ int main(int argc, char **argv) {
             }
         }
 
+        ++fps_counter;
+
+        double time_now = glfwGetTime();
+        double frame_timer_elapsed = time_now - frame_timer_start;
+        double elapsed = time_now - start_time;
+        if (elapsed >= 1.0) {
+            fprintf(stderr, "fps: %d\n", fps_counter);
+            start_time = time_now;
+            current_fps = fps_counter;
+            fps_counter = 0;
+        }
+
         double frame_time_overflow = frame_timer_elapsed - target_fps;
         if (frame_time_overflow >= 0.0) {
             frame_timer_start = time_now - frame_time_overflow;
+
+            if(redraw) {
+                redraw = false;
+                // TODO: Use a framebuffer instead. glCopyImageSubData requires
+                // opengl 4.2
+                glCopyImageSubData(
+                    window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+                    window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+                    window_pixmap.texture_width, window_pixmap.texture_height, 1);
+                // int err = glGetError();
+                // fprintf(stderr, "error: %d\n", err);
+
+                CUDA_MEMCPY2D memcpy_struct;
+                memcpy_struct.srcXInBytes = 0;
+                memcpy_struct.srcY = 0;
+                memcpy_struct.srcMemoryType = CUmemorytype::CU_MEMORYTYPE_ARRAY;
+
+                memcpy_struct.dstXInBytes = 0;
+                memcpy_struct.dstY = 0;
+                memcpy_struct.dstMemoryType = CUmemorytype::CU_MEMORYTYPE_DEVICE;
+
+                memcpy_struct.srcArray = mapped_array;
+                memcpy_struct.dstDevice = (CUdeviceptr)frame->data[0];
+                memcpy_struct.dstPitch = frame->linesize[0];
+                memcpy_struct.WidthInBytes = frame->width * 4;
+                memcpy_struct.Height = frame->height;
+                cuMemcpy2D(&memcpy_struct);
+                // res = cuCtxPopCurrent(&old_ctx);
+            }
+
             frame->pts = frame_count;
             frame_count += 1;
             if (avcodec_send_frame(video_stream->codec, frame) >= 0) {
@@ -945,7 +955,11 @@ int main(int argc, char **argv) {
 
         // av_frame_free(&frame);
 
-        usleep(5000);
+        double frame_end = glfwGetTime();
+        double frame_sleep_fps = 1.0 / 250.0;
+        double sleep_time = frame_sleep_fps - (frame_end - frame_start);
+        if(sleep_time > 0.0)
+            usleep(sleep_time * 1000.0 * 1000.0);
     }
 
 	running = false;

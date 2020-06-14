@@ -34,3 +34,4 @@ FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to
 * Support AMD and Intel, using VAAPI. cuda and vaapi should be loaded at runtime using dlopen instead of linking to those
 libraries at compile-time.
 * Clean up the code!
+* Fix segfault in debug mode
