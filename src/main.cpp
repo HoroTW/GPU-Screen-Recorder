@@ -23,6 +23,7 @@
 #include <thread>
 #include <mutex>
 #include <map>
+#include <signal.h>
 
 #include <unistd.h>
 
@@ -529,7 +530,15 @@ static void usage() {
     exit(1);
 }
 
+static sig_atomic_t running = 1;
+
+static void int_handler(int dummy) {
+    running = 0;
+}
+
 int main(int argc, char **argv) {
+    signal(SIGINT, int_handler);
+
     std::map<std::string, std::string> args = {
         { "-w", "" },
         { "-c", "" },
@@ -606,8 +615,7 @@ int main(int argc, char **argv) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
-    GLFWwindow *window =
-        glfwCreateWindow(1280, 720, "Hello world", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(32, 32, "gpu-screen-recorder", nullptr, nullptr);
     if (!window) {
         fprintf(stderr, "Error: Failed to create glfw window\n");
         glfwTerminate();
@@ -616,6 +624,7 @@ int main(int argc, char **argv) {
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(0);
+    glfwHideWindow(window);
 
 #if defined(DEBUG)
     XSetErrorHandler(x11_error_handler);
@@ -784,8 +793,7 @@ int main(int argc, char **argv) {
 
 	std::mutex write_output_mutex;
 
-	bool running = true;
-	std::thread audio_thread([&running](AVFormatContext *av_format_context, AVStream *audio_stream, AVPacket *audio_packet, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
+	std::thread audio_thread([](AVFormatContext *av_format_context, AVStream *audio_stream, AVPacket *audio_packet, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
 		SwrContext *swr = swr_alloc();
 		if(!swr) {
 			fprintf(stderr, "Failed to create SwrContext\n");
@@ -834,7 +842,7 @@ int main(int argc, char **argv) {
 
     bool redraw = true;
     XEvent e;
-    while (!glfwWindowShouldClose(window)) {
+    while (running) {
         double frame_start = glfwGetTime();
 
         glClear(GL_COLOR_BUFFER_BIT);
@@ -962,7 +970,7 @@ int main(int argc, char **argv) {
             usleep(sleep_time * 1000.0 * 1000.0);
     }
 
-	running = false;
+	running = 0;
 	audio_thread.join();
 
     sound_device_close(&sound_device);

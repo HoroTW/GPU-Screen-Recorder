@@ -13,8 +13,9 @@ the fps remains at 30.
 # Installation
 gpu screen recorder can be built using [sibs](https://github.com/DEC05EBA/sibs) or if you are running Arch Linux, then you can find it on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).
 
-# Example
-Run `interactive.sh` or run `gpu-screen-recorder -w 0x1c00001 -c mp4 -f 60 -a bluez_sink.00_18_09_8A_07_93.a2dp_sink.monitor > test_video.mp4`
+# How to use
+Run `interactive.sh` or run gpu-screen-recorder directly, for example: `gpu-screen-recorder -w 0x1c00001 -c mp4 -f 60 -a bluez_sink.00_18_09_8A_07_93.a2dp_sink.monitor > test_video.mp4`\
+Then stop the screen recorder with Ctrl+C.
 
 # Demo
 [![Click here to watch a demo video on youtube](https://img.youtube.com/vi/n5tm0g01n6A/0.jpg)](https://www.youtube.com/watch?v=n5tm0g01n6A)
