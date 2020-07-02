@@ -377,7 +377,7 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     fprintf(stderr, "codec id: %d\n", (*codec)->id);
     codec_context->width = window_pixmap.texture_width & ~1;
     codec_context->height = window_pixmap.texture_height & ~1;
-	codec_context->bit_rate = 5000000 + (codec_context->width * codec_context->height) / 2; //5000000 * ((double)fps / 30.0) + (codec_context->width * codec_context->height) / 2;
+	codec_context->bit_rate = 3000000 + (codec_context->width * codec_context->height) / 2; //5000000 * ((double)fps / 30.0) + (codec_context->width * codec_context->height) / 2;
     // Timebase: This is the fundamental unit of time (in seconds) in terms
     // of which frame timestamps are represented. For fixed-fps content,
     // timebase should be 1/framerate and timestamp increments should be
