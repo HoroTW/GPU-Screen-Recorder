@@ -386,11 +386,13 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     codec_context->time_base.den = fps;
     // codec_context->framerate.num = 60;
     // codec_context->framerate.den = 1;
-    codec_context->sample_aspect_ratio.num = 1;
-    codec_context->sample_aspect_ratio.den = 1;
-    codec_context->gop_size = fps * 2;
+    codec_context->sample_aspect_ratio.num = 0;
+    codec_context->sample_aspect_ratio.den = 0;
+    codec_context->gop_size = 250;//fps * 2;
     codec_context->max_b_frames = 2;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
+    stream->time_base = codec_context->time_base;
+    stream->avg_frame_rate = av_inv_q(codec_context->time_base);
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
         codec_context->mb_decision = 2;
 
