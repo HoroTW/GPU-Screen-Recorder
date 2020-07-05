@@ -151,6 +151,12 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
                                    WindowPixmap &pixmap) {
     cleanup_window_pixmap(dpy, pixmap);
 
+    XWindowAttributes attr;
+    if (!XGetWindowAttributes(dpy, window_id, &attr)) {
+        fprintf(stderr, "Failed to get window attributes\n");
+        return false;
+    }
+
     const int pixmap_config[] = {
         GLX_BIND_TO_TEXTURE_RGBA_EXT, True,
         GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT | GLX_WINDOW_BIT,
@@ -181,6 +187,28 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     ScopedGLXFBConfig scoped_configs;
     scoped_configs.configs = configs;
 
+    bool found = false;
+    GLXFBConfig config;
+    for (int i = 0; i < c; i++) {
+        config = configs[i];
+        XVisualInfo *visual = glXGetVisualFromFBConfig(dpy, config);
+        if (!visual)
+            continue;
+
+        if (attr.depth != visual->depth) {
+            XFree(visual);
+            continue;
+        }
+        XFree(visual);
+        found = true;
+        break;
+    }
+
+    if(!found) {
+        fprintf(stderr, "No matching fb config found\n");
+        return false;
+    }
+
     Pixmap new_window_pixmap = XCompositeNameWindowPixmap(dpy, window_id);
     if (!new_window_pixmap) {
         fprintf(stderr, "Failed to get pixmap for window %ld\n", window_id);
@@ -188,7 +216,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     }
 
     GLXPixmap glx_pixmap =
-        glXCreatePixmap(dpy, *configs, new_window_pixmap, pixmap_attribs);
+        glXCreatePixmap(dpy, config, new_window_pixmap, pixmap_attribs);
     if (!glx_pixmap) {
         fprintf(stderr, "Failed to create glx pixmap\n");
         XFreePixmap(dpy, new_window_pixmap);
