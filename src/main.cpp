@@ -565,44 +565,42 @@ static void int_handler(int dummy) {
     running = 0;
 }
 
+struct Arg {
+    const char *value;
+    bool optional;
+};
+
 int main(int argc, char **argv) {
     signal(SIGINT, int_handler);
 
-    std::map<std::string, std::string> args = {
-        { "-w", "" },
-        { "-c", "" },
-        { "-f", "" },
-        { "-a", "" },
+    std::map<std::string, Arg> args = {
+        { "-w", Arg { nullptr, false } },
+        { "-c", Arg { nullptr, false } },
+        { "-f", Arg { nullptr, false } },
+        { "-a", Arg { nullptr, true } }
     };
 
-    for(int i = 1; i < argc; i += 2) {
-        bool valid_arg = false;
-        for(auto &it : args) {
-            if(strcmp(argv[i], it.first.c_str()) == 0) {
-                it.second = argv[i + 1];
-                valid_arg = true;
-                break;
-            }
-        }
-
-        if(!valid_arg) {
+    for(int i = 1; i < argc - 1; i += 2) {
+        auto it = args.find(argv[i]);
+        if(it == args.end()) {
             fprintf(stderr, "Invalid argument '%s'\n", argv[i]);
             usage();
         }
+        it->second.value = argv[i + 1];
     }
 
     for(auto &it : args) {
-        if(it.second.empty()) {
+        if(!it.second.optional && !it.second.value) {
             fprintf(stderr, "Missing argument '%s'\n", it.first.c_str());
             usage();
         }
     }
 
-    Window src_window_id = strtol(args["-w"].c_str(), nullptr, 0);
-    const char *container_format = args["-c"].c_str();
-    int fps = atoi(args["-f"].c_str());
+    Window src_window_id = strtol(args["-w"].value, nullptr, 0);
+    const char *container_format = args["-c"].value;
+    int fps = atoi(args["-f"].value);
     if(fps <= 0 || fps > 255) {
-        fprintf(stderr, "invalid fps argument: %s\n", args["-f"].c_str());
+        fprintf(stderr, "invalid fps argument: %s\n", args["-f"].value);
         return 1;
     }
 
@@ -807,67 +805,74 @@ int main(int argc, char **argv) {
     int window_width = xwa.width;
     int window_height = xwa.height;
 
+    std::mutex write_output_mutex;
+    std::thread audio_thread;
+
     SoundDevice sound_device;
-    if(sound_device_get_by_name(&sound_device, args["-a"].c_str(), audio_stream->codec->channels, audio_stream->codec->frame_size) != 0) {
-        fprintf(stderr, "failed to get 'pulse' sound device\n");
-        exit(1);
+    Arg &audio_input_arg = args["-a"];
+    if(audio_input_arg.value) {
+        if(sound_device_get_by_name(&sound_device, audio_input_arg.value, audio_stream->codec->channels, audio_stream->codec->frame_size) != 0) {
+            fprintf(stderr, "failed to get 'pulse' sound device\n");
+            exit(1);
+        }
+
+        int audio_buffer_size = av_samples_get_buffer_size(NULL, audio_stream->codec->channels, audio_stream->codec->frame_size, audio_stream->codec->sample_fmt, 1);
+        uint8_t *audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
+        avcodec_fill_audio_frame(audio_frame, audio_stream->codec->channels, audio_stream->codec->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
+
+        audio_thread = std::thread([audio_buffer_size](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
+            AVPacket audio_packet;
+            if(av_new_packet(&audio_packet, audio_buffer_size) != 0) {
+                fprintf(stderr, "Failed to create audio packet\n");
+                exit(1);
+            }
+            
+            SwrContext *swr = swr_alloc();
+            if(!swr) {
+                fprintf(stderr, "Failed to create SwrContext\n");
+                exit(1);
+            }
+            av_opt_set_int(swr, "in_channel_layout", audio_stream->codec->channel_layout, 0);
+            av_opt_set_int(swr, "out_channel_layout", audio_stream->codec->channel_layout, 0);
+            av_opt_set_int(swr, "in_sample_rate", audio_stream->codec->sample_rate, 0);
+            av_opt_set_int(swr, "out_sample_rate", audio_stream->codec->sample_rate, 0);
+            av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_S16, 0);
+            av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
+            swr_init(swr);
+
+            while(running) {
+                void *sound_buffer;
+                int sound_buffer_size = sound_device_read_next_chunk(sound_device, &sound_buffer);
+                if(sound_buffer_size >= 0) {
+                    // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
+                    swr_convert(swr, &audio_frame_buf, audio_frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
+                    audio_frame->extended_data = &audio_frame_buf;
+                    // TODO: Fix this. Warning from ffmpeg:
+                    // Timestamps are unset in a packet for stream 1. This is deprecated and will stop working in the future. Fix your code to set the timestamps properly
+                    //audio_frame->pts=audio_frame_index*100;
+                    //++audio_frame_index;
+
+                    int got_frame = 0;
+                    int ret = avcodec_encode_audio2(audio_stream->codec, &audio_packet, audio_frame, &got_frame);
+                    if(ret < 0){
+                        printf("Failed to encode!\n");
+                        break;
+                    }
+                    if (got_frame==1){
+                        //printf("Succeed to encode 1 frame! \tsize:%5d\n",pkt.size);
+                        audio_packet.stream_index = audio_stream->index;
+                        std::lock_guard<std::mutex> lock(*write_output_mutex);
+                        ret = av_write_frame(av_format_context, &audio_packet);
+                        av_free_packet(&audio_packet);
+                    }
+                } else {
+                    fprintf(stderr, "failed to read sound from device, error: %d\n", sound_buffer_size);
+                }
+            }
+
+            swr_free(&swr);
+        }, av_format_context, audio_stream, audio_frame_buf, &sound_device, audio_frame, &write_output_mutex);
     }
-
-	int audio_buffer_size = av_samples_get_buffer_size(NULL, audio_stream->codec->channels, audio_stream->codec->frame_size, audio_stream->codec->sample_fmt, 1);
-	uint8_t *audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
-	avcodec_fill_audio_frame(audio_frame, audio_stream->codec->channels, audio_stream->codec->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
-
-	AVPacket audio_packet;
-	av_new_packet(&audio_packet, audio_buffer_size);
-
-	std::mutex write_output_mutex;
-
-	std::thread audio_thread([](AVFormatContext *av_format_context, AVStream *audio_stream, AVPacket *audio_packet, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
-		SwrContext *swr = swr_alloc();
-		if(!swr) {
-			fprintf(stderr, "Failed to create SwrContext\n");
-			exit(1);
-		}
-		av_opt_set_int(swr, "in_channel_layout", audio_stream->codec->channel_layout, 0);
-		av_opt_set_int(swr, "out_channel_layout", audio_stream->codec->channel_layout, 0);
-		av_opt_set_int(swr, "in_sample_rate", audio_stream->codec->sample_rate, 0);
-		av_opt_set_int(swr, "out_sample_rate", audio_stream->codec->sample_rate, 0);
-		av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_S16, 0);
-		av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
-		swr_init(swr);
-
-		while(running) {
-			void *sound_buffer;
-			int sound_buffer_size = sound_device_read_next_chunk(sound_device, &sound_buffer);
-			if(sound_buffer_size >= 0) {
-				// TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
-				swr_convert(swr, &audio_frame_buf, audio_frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
-				audio_frame->extended_data = &audio_frame_buf;
-				// TODO: Fix this. Warning from ffmpeg:
-				// Timestamps are unset in a packet for stream 1. This is deprecated and will stop working in the future. Fix your code to set the timestamps properly
-				//audio_frame->pts=audio_frame_index*100;
-				//++audio_frame_index;
-
-				int got_frame = 0;
-				int ret = avcodec_encode_audio2(audio_stream->codec, audio_packet, audio_frame, &got_frame);
-				if(ret < 0){
-					printf("Failed to encode!\n");
-					break;
-				}
-				if (got_frame==1){
-					//printf("Succeed to encode 1 frame! \tsize:%5d\n",pkt.size);
-					audio_packet->stream_index = audio_stream->index;
-					std::lock_guard<std::mutex> lock(*write_output_mutex);
-					ret = av_write_frame(av_format_context, audio_packet);
-					av_free_packet(audio_packet);
-				}
-			} else {
-				fprintf(stderr, "failed to read sound from device, error: %d\n", sound_buffer_size);
-			}
-		}
-
-		swr_free(&swr);
-	}, av_format_context, audio_stream, &audio_packet, audio_frame_buf, &sound_device, audio_frame, &write_output_mutex);
 
     bool redraw = true;
     XEvent e;
@@ -1000,9 +1005,10 @@ int main(int argc, char **argv) {
     }
 
 	running = 0;
-	audio_thread.join();
-
-    sound_device_close(&sound_device);
+	if(audio_input_arg.value) {
+	    audio_thread.join();
+        sound_device_close(&sound_device);
+    }
 
 	//Flush Encoder
 	#if 0
