@@ -1,6 +1,6 @@
 # gpu screen recorder
 This is a screen recorder that has minimal impact on system performance by recording a window using the GPU only,
-similar to shadowplay on windows.
+similar to shadowplay on windows. This is the fastest screen recording tool for Linux.
 
 The output is an h264 encoded video with aac audio.
 
