@@ -555,7 +555,7 @@ static void close_video(AVStream *video_stream, AVFrame *frame) {
 }
 
 static void usage() {
-    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> -a <audio_input>\n");
+    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>]\n");
     exit(1);
 }
 
