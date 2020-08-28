@@ -52,9 +52,11 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 }
 
+#include <deque>
+
 //#include <CL/cl.h>
 
-static char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
+static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
 
 static char* av_error_to_string(int err) {
     if(av_strerror(err, av_error_buffer, sizeof(av_error_buffer) < 0))
@@ -301,6 +303,10 @@ std::vector<std::string> get_hardware_acceleration_device_names() {
 
 static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
                            AVFormatContext *av_format_context,
+                           double replay_start_time,
+                           std::deque<AVPacket*> &frame_data_queue,
+                           int replay_buffer_size_secs,
+                           bool &frames_erased,
 						   std::mutex &write_output_mutex) {
     AVPacket av_packet;
     av_init_packet(&av_packet);
@@ -313,13 +319,29 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
             av_packet_rescale_ts(&av_packet, av_codec_context->time_base,
                                  stream->time_base);
             av_packet.stream_index = stream->index;
+            av_packet.dts = AV_NOPTS_VALUE;
             // Write the encoded video frame to disk
             // av_write_frame(av_format_context, &av_packet)
             // write(STDOUT_FILENO, av_packet.data, av_packet.size)
 			std::lock_guard<std::mutex> lock(write_output_mutex);
-            int ret = av_write_frame(av_format_context, &av_packet);
-            if(ret < 0) {
-                fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
+            if(replay_buffer_size_secs != -1) {
+                double time_now = glfwGetTime();
+                double replay_time_elapsed = time_now - replay_start_time;
+
+                AVPacket *new_pack = new AVPacket();
+                av_packet_move_ref(new_pack, &av_packet);
+                frame_data_queue.push_back(new_pack);
+                if(replay_time_elapsed >= replay_buffer_size_secs) {
+                    av_packet_unref(frame_data_queue.front());
+                    delete frame_data_queue.front();
+                    frame_data_queue.pop_front();
+                    frames_erased = true;
+                }
+            } else {
+                int ret = av_write_frame(av_format_context, &av_packet);
+                if(ret < 0) {
+                    fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
+                }
             }
             av_packet_unref(&av_packet);
         } else if (res == AVERROR(EAGAIN)) { // we have no packet
@@ -555,7 +577,16 @@ static void close_video(AVStream *video_stream, AVFrame *frame) {
 }
 
 static void usage() {
-    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>]\n");
+    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
+    fprintf(stderr, "OPTIONS:\n");
+    fprintf(stderr, "  -w    Window to record.\n");
+    fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
+    fprintf(stderr, "  -f    Framerate to record at.\n");
+    fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Optional, disabled by default.\n");
+    fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
+        " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
+        " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disable by default.\n");
+    fprintf(stderr, "  -o    The output file path. If omitted, then the encoded data is sent to stdout.\n");
     exit(1);
 }
 
@@ -577,7 +608,9 @@ int main(int argc, char **argv) {
         { "-w", Arg { nullptr, false } },
         { "-c", Arg { nullptr, false } },
         { "-f", Arg { nullptr, false } },
-        { "-a", Arg { nullptr, true } }
+        { "-a", Arg { nullptr, true } },
+        { "-o", Arg { nullptr, true } },
+        { "-r", Arg { nullptr, true} }
     };
 
     for(int i = 1; i < argc - 1; i += 2) {
@@ -604,9 +637,22 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    const char *filename = "/dev/stdout";
+    const char *filename = args["-o"].value;
+    if(!filename)
+        filename = "/dev/stdout";
 
     const double target_fps = 1.0 / (double)fps;
+
+    int replay_buffer_size_secs = -1;
+    const char *replay_buffer_size_secs_str = args["-r"].value;
+    if(replay_buffer_size_secs_str) {
+        replay_buffer_size_secs = atoi(replay_buffer_size_secs_str);
+        if(replay_buffer_size_secs < 5 || replay_buffer_size_secs > 1200) {
+            fprintf(stderr, "Error: option -r has to be between 5 and 1200, was: %s\n", replay_buffer_size_secs_str);
+            return 1;
+        }
+        replay_buffer_size_secs += 5; // Add a few seconds to account of lost packets because of non-keyframe packets skipped
+    }
 
     Display *dpy = XOpenDisplay(nullptr);
     if (!dpy) {
@@ -728,6 +774,9 @@ int main(int argc, char **argv) {
         }
     }
 
+    //video_stream->duration = AV_TIME_BASE * 15;
+    //audio_stream->duration = AV_TIME_BASE * 15;
+    //av_format_context->duration = AV_TIME_BASE * 15;
     int ret = avformat_write_header(av_format_context, nullptr);
     if (ret < 0) {
         fprintf(stderr, "Error occurred when opening output file: %s\n",
@@ -808,6 +857,10 @@ int main(int argc, char **argv) {
     std::mutex write_output_mutex;
     std::thread audio_thread;
 
+    double record_start_time = glfwGetTime();
+    std::deque<AVPacket*> frame_data_queue;
+    bool frames_erased = false;
+
     SoundDevice sound_device;
     Arg &audio_input_arg = args["-a"];
     if(audio_input_arg.value) {
@@ -820,7 +873,7 @@ int main(int argc, char **argv) {
         uint8_t *audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
         avcodec_fill_audio_frame(audio_frame, audio_stream->codec->channels, audio_stream->codec->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
 
-        audio_thread = std::thread([audio_buffer_size](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
+        audio_thread = std::thread([audio_buffer_size, record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
             AVPacket audio_packet;
             if(av_new_packet(&audio_packet, audio_buffer_size) != 0) {
                 fprintf(stderr, "Failed to create audio packet\n");
@@ -862,8 +915,25 @@ int main(int argc, char **argv) {
                         //printf("Succeed to encode 1 frame! \tsize:%5d\n",pkt.size);
                         audio_packet.stream_index = audio_stream->index;
                         std::lock_guard<std::mutex> lock(*write_output_mutex);
-                        ret = av_write_frame(av_format_context, &audio_packet);
-                        av_free_packet(&audio_packet);
+                        if(replay_buffer_size_secs != -1) {
+                            double time_now = glfwGetTime();
+                            double replay_time_elapsed = time_now - record_start_time;
+                            AVPacket *new_pack = new AVPacket();
+                            av_packet_move_ref(new_pack, &audio_packet);
+                            frame_data_queue.push_back(new_pack);
+                            if(replay_time_elapsed >= replay_buffer_size_secs) {
+                                av_packet_unref(frame_data_queue.front());
+                                delete frame_data_queue.front();
+                                frame_data_queue.pop_front();
+                                frames_erased = true;
+                            }
+                        } else {
+                            ret = av_write_frame(av_format_context, &audio_packet);
+                            if(ret < 0) {
+                                fprintf(stderr, "Error: Failed to write audio frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
+                            }
+                        }
+                        av_packet_unref(&audio_packet);
                     }
                 } else {
                     fprintf(stderr, "failed to read sound from device, error: %d\n", sound_buffer_size);
@@ -988,8 +1058,8 @@ int main(int argc, char **argv) {
             frame->pts = frame_count;
             frame_count += 1;
             if (avcodec_send_frame(video_stream->codec, frame) >= 0) {
-                receive_frames(video_stream->codec, video_stream,
-                               av_format_context, write_output_mutex);
+                receive_frames(video_stream->codec, video_stream, av_format_context,
+                               record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
             } else {
                 fprintf(stderr, "Error: avcodec_send_frame failed\n");
             }
@@ -1008,6 +1078,43 @@ int main(int argc, char **argv) {
 	if(audio_input_arg.value) {
 	    audio_thread.join();
         sound_device_close(&sound_device);
+    }
+
+
+    if(replay_buffer_size_secs != -1) {
+        size_t start_index = 0;
+        for(size_t i = 0; i < frame_data_queue.size(); ++i) {
+            AVPacket *av_packet = frame_data_queue[i];
+            if((av_packet->flags & AV_PKT_FLAG_KEY) && av_packet->stream_index == video_stream->index) {
+                start_index = i;
+                break;
+            } else {
+                //av_packet_unref(av_packet);
+                //delete av_packet;
+            }
+        }
+
+        //fprintf(stderr, "Frame start index: %zu\n", start_index);
+
+        int64_t pts_offset = 0;
+        if(frames_erased)
+            pts_offset = frame_data_queue[start_index]->pts;
+
+        for(size_t i = start_index; i < frame_data_queue.size(); ++i) {
+            AVPacket *av_packet = frame_data_queue[i];
+            if(av_packet->stream_index == video_stream->index) {
+                av_packet->pos = -1;
+                av_packet->pts -= pts_offset;
+                av_packet->dts = AV_NOPTS_VALUE;
+            }
+            av_packet->pos = -1;
+            int ret = av_write_frame(av_format_context, av_packet);
+            if(ret < 0) {
+                fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
+            }
+            //av_packet_unref(av_packet);
+            //delete av_packet;
+        }
     }
 
 	//Flush Encoder

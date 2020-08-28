@@ -2,9 +2,10 @@
 This is a screen recorder that has minimal impact on system performance by recording a window using the GPU only,
 similar to shadowplay on windows. This is the fastest screen recording tool for Linux.
 
-The output is an h264 encoded video with aac audio.
+This screen recorder can be used for recording your desktop offline, for live streaming and for nvidia-like instant replay,
+where only the last few seconds are saved.
 
-This project is still early in development.
+The output is an h264 encoded video with aac audio.
 
 # Performance
 When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however when using this screen recorder
