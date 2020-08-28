@@ -37,4 +37,5 @@ FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to
 * Support AMD and Intel, using VAAPI. cuda and vaapi should be loaded at runtime using dlopen instead of linking to those
 libraries at compile-time.
 * Clean up the code!
-* Fix segfault in debug mode
+* Fix segfault in debug mode (happens because audio codec becomes NULL?)
+* Fix blackscreen at start that appears until the second keyframe, which can be several seconds on a non-moving screen. Why does this happen? ffmpeg says the first frame should always be a keyframe!
