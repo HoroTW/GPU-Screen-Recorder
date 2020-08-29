@@ -16,6 +16,7 @@
 */
 
 #include <assert.h>
+#include <libavutil/pixfmt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
@@ -100,6 +101,7 @@ static bool x11_supports_composite_named_window_pixmap(Display *dpy) {
 }
 
 static int x11_error_handler(Display *dpy, XErrorEvent *ev) {
+#if 0
     char type_str[128];
     XGetErrorText(dpy, ev->type, type_str, sizeof(type_str));
 
@@ -117,6 +119,7 @@ static int x11_error_handler(Display *dpy, XErrorEvent *ev) {
             type_str,
             ev->request_code, major_opcode_str,
             ev->minor_code, minor_opcode_str);
+#endif
     return 0;
 }
 
@@ -422,12 +425,14 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     fprintf(stderr, "video stream id: %d\n", stream->id);
     AVCodecContext *codec_context = stream->codec;
 
+    //double fps_ratio = (double)fps / 30.0;
+
     assert((*codec)->type == AVMEDIA_TYPE_VIDEO);
     codec_context->codec_id = (*codec)->id;
     fprintf(stderr, "codec id: %d\n", (*codec)->id);
     codec_context->width = window_pixmap.texture_width & ~1;
     codec_context->height = window_pixmap.texture_height & ~1;
-	codec_context->bit_rate = 3500000 + (codec_context->width * codec_context->height) / 2; //5000000 * ((double)fps / 30.0) + (codec_context->width * codec_context->height) / 2;
+	codec_context->bit_rate = 4000000 + (codec_context->width * codec_context->height) / 2;
     // Timebase: This is the fundamental unit of time (in seconds) in terms
     // of which frame timestamps are represented. For fixed-fps content,
     // timebase should be 1/framerate and timestamp increments should be
@@ -438,9 +443,15 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     // codec_context->framerate.den = 1;
     codec_context->sample_aspect_ratio.num = 0;
     codec_context->sample_aspect_ratio.den = 0;
-    codec_context->gop_size = 250;//fps * 2;
+    codec_context->gop_size = 40;//fps * 2;
     codec_context->max_b_frames = 2;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
+    codec_context->color_range = AVCOL_RANGE_JPEG;
+    codec_context->qmin = 16;
+    codec_context->qmax = 27;
+    av_opt_set(codec_context->priv_data, "preset", "slow", 0);
+    av_opt_set(codec_context->priv_data, "profile", "high", 0);
+    codec_context->profile = FF_PROFILE_H264_HIGH;
     stream->time_base = codec_context->time_base;
     stream->avg_frame_rate = av_inv_q(codec_context->time_base);
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
@@ -585,7 +596,7 @@ static void usage() {
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Optional, disabled by default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
-        " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disable by default.\n");
+        " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
     fprintf(stderr, "  -o    The output file path. If omitted, then the encoded data is sent to stdout.\n");
     exit(1);
 }
@@ -699,10 +710,10 @@ int main(int argc, char **argv) {
     glfwSwapInterval(0);
     glfwHideWindow(window);
 
-#if defined(DEBUG)
+//#if defined(DEBUG)
     XSetErrorHandler(x11_error_handler);
     XSetIOErrorHandler(x11_io_error_handler);
-#endif
+//#endif
 
     glewExperimental = GL_TRUE;
     GLenum nGlewError = glewInit();
