@@ -170,7 +170,6 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
         GLX_BIND_TO_TEXTURE_RGBA_EXT, True,
         GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT | GLX_WINDOW_BIT,
         GLX_BIND_TO_TEXTURE_TARGETS_EXT, GLX_TEXTURE_2D_BIT_EXT,
-        GLX_BIND_TO_MIPMAP_TEXTURE_EXT, True,
         GLX_DOUBLEBUFFER, False,
         GLX_BUFFER_SIZE, 32,
         GLX_ALPHA_SIZE, 8,
@@ -183,8 +182,6 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
                                   GLX_TEXTURE_2D_EXT,
                                   GLX_TEXTURE_FORMAT_EXT,
                                   GLX_TEXTURE_FORMAT_RGBA_EXT,
-                                  GLX_MIPMAP_TEXTURE_EXT,
-                                  1,
                                   None};
 
     int c;
@@ -284,7 +281,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
                     GL_NEAREST); // GL_LINEAR );
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     GL_NEAREST); // GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
-    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    //glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
