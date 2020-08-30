@@ -87,6 +87,11 @@ struct WindowPixmap {
     GLint texture_height;
 };
 
+enum class VideoQuality {
+    HIGH,
+    ULTRA
+};
+
 static bool x11_supports_composite_named_window_pixmap(Display *dpy) {
     int extension_major;
     int extension_minor;
@@ -400,7 +405,7 @@ static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodec **
 }
 
 static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **codec,
-                            enum AVCodecID codec_id,
+                            VideoQuality video_quality,
                             const WindowPixmap &window_pixmap,
                             int fps) {
     //*codec = avcodec_find_encoder(codec_id);
@@ -446,11 +451,22 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     codec_context->max_b_frames = 2;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
-    codec_context->qmin = 16;
-    codec_context->qmax = 27;
-    av_opt_set(codec_context->priv_data, "preset", "slow", 0);
-    av_opt_set(codec_context->priv_data, "profile", "high", 0);
-    codec_context->profile = FF_PROFILE_H264_HIGH;
+    switch(video_quality) {
+        case VideoQuality::HIGH:
+            codec_context->qmin = 18;
+            codec_context->qmax = 27;
+            av_opt_set(codec_context->priv_data, "preset", "slow", 0);
+            av_opt_set(codec_context->priv_data, "profile", "baseline", 0);
+            codec_context->profile = FF_PROFILE_H264_BASELINE;
+            break;
+        case VideoQuality::ULTRA:
+            codec_context->qmin = 16;
+            codec_context->qmax = 25;
+            av_opt_set(codec_context->priv_data, "preset", "slow", 0);
+            av_opt_set(codec_context->priv_data, "profile", "high", 0);
+            codec_context->profile = FF_PROFILE_H264_HIGH;
+            break;
+    }
     stream->time_base = codec_context->time_base;
     stream->avg_frame_rate = av_inv_q(codec_context->time_base);
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
@@ -587,12 +603,13 @@ static void close_video(AVStream *video_stream, AVFrame *frame) {
 }
 
 static void usage() {
-    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
+    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
     fprintf(stderr, "OPTIONS:\n");
     fprintf(stderr, "  -w    Window to record.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Optional, disabled by default.\n");
+    fprintf(stderr, "  -q    Video quality. Should either be 'high' or 'ultra'. Optional, set to 'high' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
@@ -619,6 +636,7 @@ int main(int argc, char **argv) {
         { "-c", Arg { nullptr, false } },
         { "-f", Arg { nullptr, false } },
         { "-a", Arg { nullptr, true } },
+        { "-q", Arg { nullptr, true } },
         { "-o", Arg { nullptr, true } },
         { "-r", Arg { nullptr, true} }
     };
@@ -645,6 +663,20 @@ int main(int argc, char **argv) {
     if(fps <= 0 || fps > 255) {
         fprintf(stderr, "invalid fps argument: %s\n", args["-f"].value);
         return 1;
+    }
+
+    const char *quality_str = args["-q"].value;
+    if(!quality_str)
+        quality_str = "high";
+
+    VideoQuality quality;
+    if(strcmp(quality_str, "high") == 0) {
+        quality = VideoQuality::HIGH;
+    } else if(strcmp(quality_str, "ultra") == 0) {
+        quality = VideoQuality::ULTRA;
+    } else {
+        fprintf(stderr, "Error: -q should either be 'high' or 'ultra', got: %s\n", quality_str);
+        usage();
     }
 
     const char *filename = args["-o"].value;
@@ -746,7 +778,7 @@ int main(int argc, char **argv) {
 
     AVCodec *video_codec;
     AVStream *video_stream =
-        add_video_stream(av_format_context, &video_codec, output_format->video_codec,
+        add_video_stream(av_format_context, &video_codec, quality,
                    window_pixmap, fps);
     if (!video_stream) {
         fprintf(stderr, "Error: Failed to create video stream\n");
