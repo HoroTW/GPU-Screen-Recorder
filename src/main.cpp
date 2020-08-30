@@ -37,7 +37,6 @@
 #include <GLFW/glfw3.h>
 
 #include <X11/extensions/Xcomposite.h>
-#include <X11/extensions/Xdamage.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -699,7 +698,7 @@ int main(int argc, char **argv) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
 
-    GLFWwindow *window = glfwCreateWindow(32, 32, "gpu-screen-recorder", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(1, 1, "gpu-screen-recorder", nullptr, nullptr);
     if (!window) {
         fprintf(stderr, "Error: Failed to create glfw window\n");
         glfwTerminate();
@@ -809,15 +808,6 @@ int main(int argc, char **argv) {
     // avcodec_close(av_codec_context);
 
     XSelectInput(dpy, src_window_id, StructureNotifyMask);
-
-    int damage_event;
-    int damage_error;
-    if (!XDamageQueryExtension(dpy, &damage_event, &damage_error)) {
-        fprintf(stderr, "Error: XDamage is not supported by your X11 server\n");
-        return 1;
-    }
-
-    Damage xdamage = XDamageCreate(dpy, src_window_id, XDamageReportNonEmpty);
 
     int frame_count = 0;
 
@@ -960,8 +950,7 @@ int main(int argc, char **argv) {
     while (running) {
         double frame_start = glfwGetTime();
 
-        glClear(GL_COLOR_BUFFER_BIT);
-        glfwSwapBuffers(window);
+        /*glClear(GL_COLOR_BUFFER_BIT);*/
         glfwPollEvents();
 
         if (XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e) && e.xconfigure.window == src_window_id) {
@@ -974,17 +963,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (XCheckTypedWindowEvent(dpy, src_window_id, damage_event + XDamageNotify, &e)) {
-            // fprintf(stderr, "Redraw!\n");
-            XDamageNotifyEvent *de = (XDamageNotifyEvent *)&e;
-            // de->drawable is the window ID of the damaged window
-            XserverRegion region = XFixesCreateRegion(dpy, nullptr, 0);
-            // Subtract all the damage, repairing the window
-            XDamageSubtract(dpy, de->damage, None, region);
-            XFixesDestroyRegion(dpy, region);
-
-            redraw = true;
-        }
+        redraw = true;
 
         const double window_resize_timeout = 1.0; // 1 second
         if(window_resized && glfwGetTime() - window_resize_timer >= window_resize_timeout) {
@@ -1064,6 +1043,7 @@ int main(int argc, char **argv) {
                 memcpy_struct.Height = frame->height;
                 cuMemcpy2D(&memcpy_struct);
                 // res = cuCtxPopCurrent(&old_ctx);
+                glfwSwapBuffers(window);
             }
 
             frame->pts = frame_count;
@@ -1153,7 +1133,6 @@ int main(int argc, char **argv) {
      if(!(output_format->flags & AVFMT_NOFILE))
         avio_close(av_format_context->pb);
     // avformat_free_context(av_format_context);
-    // XDamageDestroy(dpy, xdamage);
 
     // cleanup_window_pixmap(dpy, window_pixmap);
     XCompositeUnredirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
