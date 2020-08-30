@@ -167,12 +167,12 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     }
 
     const int pixmap_config[] = {
-        GLX_BIND_TO_TEXTURE_RGBA_EXT, True,
+        GLX_BIND_TO_TEXTURE_RGB_EXT, True,
         GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT | GLX_WINDOW_BIT,
         GLX_BIND_TO_TEXTURE_TARGETS_EXT, GLX_TEXTURE_2D_BIT_EXT,
         GLX_DOUBLEBUFFER, False,
         GLX_BUFFER_SIZE, 32,
-        GLX_ALPHA_SIZE, 8,
+        GLX_ALPHA_SIZE, 0,
         // GLX_Y_INVERTED_EXT, (int)GLX_DONT_CARE,
         None};
 
@@ -181,7 +181,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     const int pixmap_attribs[] = {GLX_TEXTURE_TARGET_EXT,
                                   GLX_TEXTURE_2D_EXT,
                                   GLX_TEXTURE_FORMAT_EXT,
-                                  GLX_TEXTURE_FORMAT_RGBA_EXT,
+                                  GLX_TEXTURE_FORMAT_RGB_EXT,
                                   None};
 
     int c;
@@ -260,8 +260,8 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     // then needed every frame.
     glGenTextures(1, &pixmap.target_texture_id);
     glBindTexture(GL_TEXTURE_2D, pixmap.target_texture_id);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pixmap.texture_width,
-                 pixmap.texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, pixmap.texture_width,
+                 pixmap.texture_height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
     int err2 = glGetError();
     fprintf(stderr, "error: %d\n", err2);
     glCopyImageSubData(pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
@@ -544,7 +544,7 @@ static void open_video(AVCodec *codec, AVStream *stream,
         (AVHWFramesContext *)frame_context->data;
     hw_frame_context->width = codec_context->width;
     hw_frame_context->height = codec_context->height;
-    hw_frame_context->sw_format = AV_PIX_FMT_0BGR32;
+    hw_frame_context->sw_format = AV_PIX_FMT_0RGB32;
     hw_frame_context->format = codec_context->pix_fmt;
     hw_frame_context->device_ref = *device_ctx;
     hw_frame_context->device_ctx = (AVHWDeviceContext *)(*device_ctx)->data;
