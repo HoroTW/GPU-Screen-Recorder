@@ -436,7 +436,7 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     fprintf(stderr, "codec id: %d\n", (*codec)->id);
     codec_context->width = window_pixmap.texture_width & ~1;
     codec_context->height = window_pixmap.texture_height & ~1;
-	codec_context->bit_rate = 4000000 + (codec_context->width * codec_context->height) / 2;
+	codec_context->bit_rate = 7500000 + (codec_context->width * codec_context->height) / 2;
     // Timebase: This is the fundamental unit of time (in seconds) in terms
     // of which frame timestamps are represented. For fixed-fps content,
     // timebase should be 1/framerate and timestamp increments should be
@@ -447,24 +447,25 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     // codec_context->framerate.den = 1;
     codec_context->sample_aspect_ratio.num = 0;
     codec_context->sample_aspect_ratio.den = 0;
-    codec_context->gop_size = 40;//fps * 2;
+    codec_context->gop_size = fps * 2;
     codec_context->max_b_frames = 2;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
     switch(video_quality) {
         case VideoQuality::HIGH:
-            codec_context->qmin = 18;
-            codec_context->qmax = 27;
-            av_opt_set(codec_context->priv_data, "preset", "slow", 0);
-            av_opt_set(codec_context->priv_data, "profile", "high", 0);
-            codec_context->profile = FF_PROFILE_H264_HIGH;
+            codec_context->qmin = 10;
+            codec_context->qmax = 15;
+            //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
+            //av_opt_set(codec_context->priv_data, "profile", "high", 0);
+            //codec_context->profile = FF_PROFILE_H264_HIGH;
             break;
         case VideoQuality::ULTRA:
-            codec_context->qmin = 16;
-            codec_context->qmax = 26;
-            av_opt_set(codec_context->priv_data, "preset", "slow", 0);
-            av_opt_set(codec_context->priv_data, "profile", "high", 0);
-            codec_context->profile = FF_PROFILE_H264_HIGH;
+	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
+            codec_context->qmin = 10;
+            codec_context->qmax = 15;
+            //av_opt_set(codec_context->priv_data, "preset", "veryslow", 0);
+            //av_opt_set(codec_context->priv_data, "profile", "high", 0);
+            //codec_context->profile = FF_PROFILE_H264_HIGH;
             break;
     }
     stream->time_base = codec_context->time_base;
