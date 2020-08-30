@@ -1,4 +1,6 @@
-#!/bin/sh -e
+#!/usr/bin/env bash
+
+set -e
 
 print_selected_window_id() {
     xwininfo | grep 'Window id:' | cut -d' ' -f4
