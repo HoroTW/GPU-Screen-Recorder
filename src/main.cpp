@@ -461,7 +461,7 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
             break;
         case VideoQuality::ULTRA:
             codec_context->qmin = 16;
-            codec_context->qmax = 25;
+            codec_context->qmax = 26;
             av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             av_opt_set(codec_context->priv_data, "profile", "high", 0);
             codec_context->profile = FF_PROFILE_H264_HIGH;
