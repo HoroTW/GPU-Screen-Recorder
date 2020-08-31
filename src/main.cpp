@@ -999,7 +999,7 @@ int main(int argc, char **argv) {
         FD_SET(x11_fd, &in_fds);
 
         /* Wake up thread every frame even if no events are received */
-        tv.tv_usec = 1000 * (1000.0 / (double)fps);
+        tv.tv_usec = 1000 * (1000.0 / ((double)fps * 2.0));
         tv.tv_sec = 0;
 
         int num_ready_fds = select(x11_fd + 1, &in_fds, NULL, NULL, &tv);
