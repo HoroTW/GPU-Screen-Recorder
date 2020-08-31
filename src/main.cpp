@@ -88,6 +88,7 @@ struct WindowPixmap {
 };
 
 enum class VideoQuality {
+    MEDIUM,
     HIGH,
     ULTRA
 };
@@ -449,6 +450,14 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
     switch(video_quality) {
+        case VideoQuality::MEDIUM:
+	        codec_context->bit_rate = 5000000 + (codec_context->width * codec_context->height) / 2;
+            codec_context->qmin = 16;
+            codec_context->qmax = 23;
+            //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
+            //av_opt_set(codec_context->priv_data, "profile", "high", 0);
+            //codec_context->profile = FF_PROFILE_H264_HIGH;
+            break;
         case VideoQuality::HIGH:
             codec_context->qmin = 12;
             codec_context->qmax = 18;
@@ -668,12 +677,14 @@ int main(int argc, char **argv) {
         quality_str = "high";
 
     VideoQuality quality;
-    if(strcmp(quality_str, "high") == 0) {
+    if(strcmp(quality_str, "medium") == 0) {
+        quality = VideoQuality::MEDIUM;
+    } else if(strcmp(quality_str, "high") == 0) {
         quality = VideoQuality::HIGH;
     } else if(strcmp(quality_str, "ultra") == 0) {
         quality = VideoQuality::ULTRA;
     } else {
-        fprintf(stderr, "Error: -q should either be 'high' or 'ultra', got: %s\n", quality_str);
+        fprintf(stderr, "Error: -q should either be either 'medium', 'high' or 'ultra', got: '%s'\n", quality_str);
         usage();
     }
 
