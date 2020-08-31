@@ -897,6 +897,9 @@ int main(int argc, char **argv) {
     int window_width = xwa.width;
     int window_height = xwa.height;
 
+    int original_window_width = window_width;
+    int original_window_height = window_height;
+
     std::mutex write_output_mutex;
     std::thread audio_thread;
 
@@ -1026,6 +1029,7 @@ int main(int argc, char **argv) {
                         "Error: cuGraphicsGLRegisterImage failed, error %s, texture "
                         "id: %u\n",
                         err_str, window_pixmap.target_texture_id);
+                running = false;
                 break;
             }
 
@@ -1037,8 +1041,21 @@ int main(int argc, char **argv) {
             av_frame_unref(frame);
             if (av_hwframe_get_buffer(video_stream->codec->hw_frames_ctx, frame, 0) < 0) {
                 fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
+                running = false;
                 break;
             }
+
+            frame->pts = frame_count;
+
+            if(window_width < original_window_width)
+                frame->width = window_pixmap.texture_width & ~1;
+            else
+                frame->width = original_window_width;
+
+            if(window_height < original_window_height)
+                frame->height = window_pixmap.texture_height & ~1;
+            else
+                frame->height = original_window_height;
         }
 
         ++fps_counter;
@@ -1085,7 +1102,6 @@ int main(int argc, char **argv) {
                 cuMemcpy2D(&memcpy_struct);
                 // res = cuCtxPopCurrent(&old_ctx);
                 glfwSwapBuffers(window);
-
             }
 
             frame->pts = frame_count;
