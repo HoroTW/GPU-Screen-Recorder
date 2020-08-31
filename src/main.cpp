@@ -452,8 +452,8 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     switch(video_quality) {
         case VideoQuality::MEDIUM:
 	        codec_context->bit_rate = 5000000 + (codec_context->width * codec_context->height) / 2;
-            codec_context->qmin = 16;
-            codec_context->qmax = 23;
+            codec_context->qmin = 17;
+            codec_context->qmax = 25;
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
@@ -616,7 +616,7 @@ static void usage() {
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Optional, disabled by default.\n");
-    fprintf(stderr, "  -q    Video quality. Should either be 'high' or 'ultra'. Optional, set to 'high' be default.\n");
+    fprintf(stderr, "  -q    Video quality. Should either be 'medium', 'high' or 'ultra'. Optional, set to 'medium' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
@@ -674,7 +674,7 @@ int main(int argc, char **argv) {
 
     const char *quality_str = args["-q"].value;
     if(!quality_str)
-        quality_str = "high";
+        quality_str = "medium";
 
     VideoQuality quality;
     if(strcmp(quality_str, "medium") == 0) {
