@@ -40,3 +40,4 @@ libraries at compile-time.
 * Fix segfault in debug mode (happens because audio codec becomes NULL?)
 * Fix blackscreen at start that appears until the second keyframe, which can be several seconds on a non-moving screen. Why does this happen? ffmpeg says the first frame should always be a keyframe!
 * Dynamically change bitrate to match desired fps. This would be helpful when streaming for example, where the encode output speed also depends on upload speed to the stream service.
+* Random frames are skipped, why?

@@ -451,16 +451,16 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     codec_context->color_range = AVCOL_RANGE_JPEG;
     switch(video_quality) {
         case VideoQuality::HIGH:
-            codec_context->qmin = 10;
-            codec_context->qmax = 15;
+            codec_context->qmin = 12;
+            codec_context->qmax = 18;
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
             break;
         case VideoQuality::ULTRA:
 	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
-            codec_context->qmin = 10;
-            codec_context->qmax = 15;
+            codec_context->qmin = 12;
+            codec_context->qmax = 18;
             //av_opt_set(codec_context->priv_data, "preset", "veryslow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
@@ -1114,6 +1114,7 @@ int main(int argc, char **argv) {
                 cuMemcpy2D(&memcpy_struct);
                 // res = cuCtxPopCurrent(&old_ctx);
                 glfwSwapBuffers(window);
+
             }
 
             frame->pts = frame_count;
