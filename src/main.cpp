@@ -37,7 +37,6 @@
 #include <GLFW/glfw3.h>
 
 #include <X11/extensions/Xcomposite.h>
-#include <X11/extensions/Xdamage.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -840,6 +839,7 @@ int main(int argc, char **argv) {
 
     XSelectInput(dpy, src_window_id, StructureNotifyMask);
 
+    /*
     int damage_event;
     int damage_error;
     if (!XDamageQueryExtension(dpy, &damage_event, &damage_error)) {
@@ -849,6 +849,7 @@ int main(int argc, char **argv) {
 
     Damage damage = XDamageCreate(dpy, src_window_id, XDamageReportNonEmpty);
     XDamageSubtract(dpy, damage,None,None);
+    */
 
     int frame_count = 0;
 
@@ -986,56 +987,24 @@ int main(int argc, char **argv) {
         }, av_format_context, audio_stream, audio_frame_buf, &sound_device, audio_frame, &write_output_mutex);
     }
 
-    int x11_fd = ConnectionNumber(dpy);
-    fd_set in_fds;
-    struct timeval tv;
-
     bool redraw = true;
     XEvent e;
     while (running) {
+        double frame_start = glfwGetTime();
         glfwPollEvents();
 
-        FD_ZERO(&in_fds);
-        FD_SET(x11_fd, &in_fds);
-
-        /* Wake up thread every frame even if no events are received */
-        tv.tv_usec = 1000 * (1000.0 / ((double)fps * 2.0));
-        tv.tv_sec = 0;
-
-        int num_ready_fds = select(x11_fd + 1, &in_fds, NULL, NULL, &tv);
-        if (num_ready_fds < 0) {
-            //fprintf(stderr, "Window manager error: select failed on display file descriptor!\n");
-            continue;
-        }
-
         /*glClear(GL_COLOR_BUFFER_BIT);*/
-
-        while(num_ready_fds > 0 && XPending(dpy)) {
-            XNextEvent(dpy, &e);
-
-            if (e.type == ConfigureNotify && e.xconfigure.window == src_window_id) {
-                // Window resize
-                if(e.xconfigure.width != window_width || e.xconfigure.height != window_height) {
-                    window_width = e.xconfigure.width;
-                    window_height = e.xconfigure.height;
-                    window_resize_timer = glfwGetTime();
-                    window_resized = true;
-                }
-            }
-
-            if (e.type == damage_event + XDamageNotify) {
-                // fprintf(stderr, "Redraw!\n");
-                XDamageNotifyEvent *de = (XDamageNotifyEvent *)&e;
-                // de->drawable is the window ID of the damaged window
-                XserverRegion region = XFixesCreateRegion(dpy, nullptr, 0);
-                // Subtract all the damage, repairing the window
-                XDamageSubtract(dpy, de->damage, None, region);
-                XFixesDestroyRegion(dpy, region);
-
-                ++fps_counter;
-                redraw = true;
+        if (XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e) && e.xconfigure.window == src_window_id) {
+            // Window resize
+            if(e.xconfigure.width != window_width || e.xconfigure.height != window_height) {
+                window_width = e.xconfigure.width;
+                window_height = e.xconfigure.height;
+                window_resize_timer = glfwGetTime();
+                window_resized = true;
             }
         }
+
+        redraw = true;
 
         const double window_resize_timeout = 1.0; // 1 second
         if(window_resized && glfwGetTime() - window_resize_timer >= window_resize_timeout) {
@@ -1071,6 +1040,8 @@ int main(int argc, char **argv) {
                 break;
             }
         }
+
+        ++fps_counter;
 
         double time_now = glfwGetTime();
         double frame_timer_elapsed = time_now - frame_timer_start;
@@ -1128,6 +1099,11 @@ int main(int argc, char **argv) {
         }
 
         // av_frame_free(&frame);
+        double frame_end = glfwGetTime();
+        double frame_sleep_fps = 1.0 / 250.0;
+        double sleep_time = frame_sleep_fps - (frame_end - frame_start);
+        if(sleep_time > 0.0)
+            usleep(sleep_time * 1000.0 * 1000.0);
     }
 
 	running = 0;
