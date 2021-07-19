@@ -177,8 +177,6 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
         // GLX_Y_INVERTED_EXT, (int)GLX_DONT_CARE,
         None};
 
-    // Note that mipmap is generated even though its not used.
-    // glCopyImageSubData fails if the texture doesn't have mipmap.
     const int pixmap_attribs[] = {GLX_TEXTURE_TARGET_EXT,
                                   GLX_TEXTURE_2D_EXT,
                                   GLX_TEXTURE_FORMAT_EXT,
@@ -265,11 +263,6 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
                  pixmap.texture_height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
     int err2 = glGetError();
     fprintf(stderr, "error: %d\n", err2);
-    glCopyImageSubData(pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-                       pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-                       pixmap.texture_width, pixmap.texture_height, 1);
-    int err = glGetError();
-    fprintf(stderr, "error: %d\n", err);
     // glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
     // glGenerateTextureMipmapEXT(glxpixmap, GL_TEXTURE_2D);
 
@@ -1007,7 +1000,7 @@ int main(int argc, char **argv) {
         double frame_start = glfwGetTime();
         glfwPollEvents();
 
-        /*glClear(GL_COLOR_BUFFER_BIT);*/
+        glClear(GL_COLOR_BUFFER_BIT);
         if (XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e) && e.xconfigure.window == src_window_id) {
             // Window resize
             if(e.xconfigure.width != window_width || e.xconfigure.height != window_height) {
@@ -1093,6 +1086,7 @@ int main(int argc, char **argv) {
                     window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
                     window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
                     window_pixmap.texture_width, window_pixmap.texture_height, 1);
+                glfwSwapBuffers(window);
                 // int err = glGetError();
                 // fprintf(stderr, "error: %d\n", err);
 
@@ -1112,7 +1106,6 @@ int main(int argc, char **argv) {
                 memcpy_struct.Height = frame->height;
                 cuMemcpy2D(&memcpy_struct);
                 // res = cuCtxPopCurrent(&old_ctx);
-                glfwSwapBuffers(window);
             }
 
             frame->pts = frame_count;
