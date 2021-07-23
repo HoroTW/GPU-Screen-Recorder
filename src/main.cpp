@@ -400,17 +400,15 @@ static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodec **
 static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **codec,
                             VideoQuality video_quality,
                             int texture_width, int texture_height,
-                            int fps) {
-    //*codec = avcodec_find_encoder(codec_id);
-    bool using_hevc = true;
-    *codec = avcodec_find_encoder_by_name("hevc_nvenc");
+                            int fps, bool use_hevc) {
+    *codec = avcodec_find_encoder_by_name(use_hevc ? "hevc_nvenc" : "h264_nvenc");
     if (!*codec) {
-        *codec = avcodec_find_encoder_by_name("nvenc_hevc");
+        *codec = avcodec_find_encoder_by_name(use_hevc ? "nvenc_hevc" : "nvenc_h264");
     }
     if (!*codec) {
         fprintf(
             stderr,
-            "Error: Could not find h264_nvenc or nvenc_h264 encoder\n");
+            "Error: Could not find %s encoder\n", use_hevc ? "hevc" : "h264");
         exit(1);
     }
 
@@ -442,7 +440,7 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     codec_context->sample_aspect_ratio.num = 0;
     codec_context->sample_aspect_ratio.den = 0;
     codec_context->gop_size = fps * 2;
-    codec_context->max_b_frames = using_hevc ? 0 : 2;
+    codec_context->max_b_frames = use_hevc ? 0 : 2;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
     switch(video_quality) {
@@ -882,7 +880,7 @@ int main(int argc, char **argv) {
 
     AVCodec *video_codec;
     AVStream *video_stream =
-        add_video_stream(av_format_context, &video_codec, quality, window_pixmap.texture_width, window_pixmap.texture_height, fps);
+        add_video_stream(av_format_context, &video_codec, quality, window_pixmap.texture_width, window_pixmap.texture_height, fps, strcmp(window_str, "screen") == 0);
     if (!video_stream) {
         fprintf(stderr, "Error: Failed to create video stream\n");
         return 1;
