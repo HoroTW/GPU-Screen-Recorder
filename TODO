@@ -1,0 +1,7 @@
+Check for reparent.
+Only add window to list if its the window is a topmost window.
+Use nvEncoder api directly? maybe with this we could copy the window opengl texture directly to the gpu which doesn't work right now for some reason.
+    Right now we are required to copy the opengl texture to another opengl texture first.
+Load cuda at runtime with dlopen.
+Track window damages and only update then. That is better for output file size.
+Remove cuda to cuda copy when using nvFBC if possible. ffmpeg is getting in the way.
