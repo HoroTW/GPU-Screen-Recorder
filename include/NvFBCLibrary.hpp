@@ -129,10 +129,10 @@ public:
             *display_height = height;
         }
         create_capture_params.eTrackingType = tracking_type;
-        //create_capture_params.dwSamplingRateMs = 1000 / fps;
+        create_capture_params.dwSamplingRateMs = 1000 / fps;
         // Cant use this, it breaks when a compositor is used
         //create_capture_params.bAllowDirectCapture = NVFBC_TRUE;
-        create_capture_params.bPushModel = NVFBC_TRUE;
+        //create_capture_params.bPushModel = NVFBC_TRUE;
         if(tracking_type == NVFBC_TRACKING_OUTPUT)
             create_capture_params.dwOutputId = output_id;
 
