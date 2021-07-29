@@ -611,7 +611,7 @@ static void usage() {
     fprintf(stderr, "  -w    Window to record or a display or \"screen\". The display is the display name in xrandr and if \"screen\" is selected then all displays are recorded and they are recorded in h265 (aka hevc). Recording a display requires a gpu with NvFBC support.\n");
     //fprintf(stderr, "  -s    The screen region to capture in format WxH+X+Y. This is only applicable when -w is a display or \"screen\". Optional, the entire window/display/screen is recorded by default.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
-    fprintf(stderr, "  -f    Framerate to record at. Clamped to [1,500].\n");
+    fprintf(stderr, "  -f    Framerate to record at. Clamped to [1,250].\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Optional, disabled by default.\n");
     fprintf(stderr, "  -q    Video quality. Should either be 'medium', 'high' or 'ultra'. Optional, set to 'medium' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
@@ -705,8 +705,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Invalid fps argument: %s\n", args["-f"].value);
         return 1;
     }
-    if(fps > 500)
-        fps = 500;
+    if(fps > 250)
+        fps = 250;
 
     const char *quality_str = args["-q"].value;
     if(!quality_str)

@@ -122,7 +122,7 @@ public:
         memset(&create_capture_params, 0, sizeof(create_capture_params));
         create_capture_params.dwVersion = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER;
         create_capture_params.eCaptureType = NVFBC_CAPTURE_SHARED_CUDA;
-        create_capture_params.bWithCursor = NVFBC_TRUE; // This will need to be disabled when using bAllowDirectCapture
+        create_capture_params.bWithCursor = NVFBC_FALSE;
         if(capture_region) {
             create_capture_params.captureBox = { x, y, width, height };
             *display_width = width;
@@ -130,10 +130,11 @@ public:
         }
         create_capture_params.eTrackingType = tracking_type;
         //create_capture_params.dwSamplingRateMs = 1000 / fps;
+        create_capture_params.bAllowDirectCapture = NVFBC_TRUE;
+        create_capture_params.bPushModel = NVFBC_TRUE;
         if(tracking_type == NVFBC_TRACKING_OUTPUT)
             create_capture_params.dwOutputId = output_id;
 
-        // TODO: Use create_capture_params.bAllowDirectCapture and create_capture_params.bPushModel
         status = nv_fbc_function_list.nvFBCCreateCaptureSession(nv_fbc_handle, &create_capture_params);
         if(status != NVFBC_SUCCESS) {
             fprintf(stderr, "Error: %s\n", nv_fbc_function_list.nvFBCGetLastErrorStr(nv_fbc_handle));
