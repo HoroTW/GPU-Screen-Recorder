@@ -315,14 +315,10 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
         av_packet.size = 0;
         int res = avcodec_receive_packet(av_codec_context, &av_packet);
         if (res == 0) { // we have a packet, send the packet to the muxer
-            assert(av_packet.stream_index == stream->id);
             av_packet_rescale_ts(&av_packet, av_codec_context->time_base,
                                  stream->time_base);
             av_packet.stream_index = stream->index;
             av_packet.dts = AV_NOPTS_VALUE;
-            // Write the encoded video frame to disk
-            // av_write_frame(av_format_context, &av_packet)
-            // write(STDOUT_FILENO, av_packet.data, av_packet.size)
 			std::lock_guard<std::mutex> lock(write_output_mutex);
             if(replay_buffer_size_secs != -1) {
                 double time_now = glfwGetTime();
@@ -338,7 +334,7 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
                     frames_erased = true;
                 }
             } else {
-                int ret = av_write_frame(av_format_context, &av_packet);
+                int ret = av_interleaved_write_frame(av_format_context, &av_packet);
                 if(ret < 0) {
                     fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
                 }
@@ -1075,7 +1071,7 @@ int main(int argc, char **argv) {
                                 frames_erased = true;
                             }
                         } else {
-                            ret = av_write_frame(av_format_context, &audio_packet);
+                            ret = av_interleaved_write_frame(av_format_context, &audio_packet);
                             if(ret < 0) {
                                 fprintf(stderr, "Error: Failed to write audio frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
                             }
@@ -1291,7 +1287,7 @@ int main(int argc, char **argv) {
                 av_packet->dts = AV_NOPTS_VALUE;
             }
             av_packet->pos = -1;
-            int ret = av_write_frame(av_format_context, av_packet);
+            int ret = av_interleaved_write_frame(av_format_context, av_packet);
             if(ret < 0) {
                 fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
             }
