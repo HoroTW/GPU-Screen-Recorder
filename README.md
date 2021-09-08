@@ -7,6 +7,9 @@ where only the last few seconds are saved.
 
 The output is an h264 encoded video with aac audio.
 
+## Note
+Might now work when using a compositor such as picom when using the glx backend.
+
 # Performance
 When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however when using this screen recorder
 the fps remains at 30.
