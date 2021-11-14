@@ -16,7 +16,7 @@ the fps remains at 30.
 
 # Installation
 gpu screen recorder can be built using [sibs](https://git.dec05eba.com/sibs) or if you are running Arch Linux, then you can find it on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
-Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using https://github.com/keylase/nvidia-patch you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
+Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
 
 # How to use
 Run `interactive.sh` or run gpu-screen-recorder directly, for example: `gpu-screen-recorder -w 0x1c00001 -c mp4 -f 60 -a bluez_sink.00_18_09_8A_07_93.a2dp_sink.monitor > test_video.mp4`\
