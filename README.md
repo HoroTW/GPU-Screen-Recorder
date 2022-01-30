@@ -16,6 +16,7 @@ the fps remains at 30.
 
 # Installation
 Run `./build.sh` or if you are running Arch Linux, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
+Dependencies needed when building using `build.sh`: `glew glfw3 cuda ffmpeg libx11 libxcomposite libpulse-simple`.\
 Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
 
 # How to use
@@ -25,9 +26,6 @@ There is also a gui for the gpu-screen-recorder, called [gpu-screen-recorder-gtk
 
 # Demo
 [![Click here to watch a demo video on youtube](https://img.youtube.com/vi/n5tm0g01n6A/0.jpg)](https://www.youtube.com/watch?v=n5tm0g01n6A)
-
-# Requirements
-X11, Nvidia (cuda), alsa or pulseaudio
 
 # FAQ
 ## How is this different from using OBS with nvenc?
