@@ -29,4 +29,4 @@ read output_file_name
 output_dir=$(dirname "$output_file_name")
 mkdir -p "$output_dir"
 
-./sibs-build/linux_x86_64/release/gpu-screen-recorder -w "$window_id" -c mp4 -f "$fps" -a "$selected_audio_input" -o "$output_file_name"
+./gpu-screen-recorder -w "$window_id" -c mp4 -f "$fps" -a "$selected_audio_input" -o "$output_file_name"

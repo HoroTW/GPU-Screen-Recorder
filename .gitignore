@@ -3,4 +3,9 @@ sibs-build/
 compile_commands.json
 tests/sibs-build/
 tests/compile_commands.json
+
 .clangd/
+
+main.o
+sound.o
+gpu-screen-recorder
