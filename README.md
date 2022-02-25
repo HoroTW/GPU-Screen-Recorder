@@ -5,8 +5,6 @@ similar to shadowplay on windows. This is the fastest screen recording tool for 
 This screen recorder can be used for recording your desktop offline, for live streaming and for nvidia-like instant replay,
 where only the last few seconds are saved.
 
-The output is an h264 encoded video with aac audio.
-
 ## Note
 Might now work when using a compositor such as picom when using the glx backend.
 
