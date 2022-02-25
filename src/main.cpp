@@ -311,7 +311,7 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
                            bool &frames_erased,
 						   std::mutex &write_output_mutex) {
     AVPacket av_packet;
-    av_init_packet(&av_packet);
+    memset(&av_packet, 0, sizeof(av_packet));
     for (;;) {
         av_packet.data = NULL;
         av_packet.size = 0;
@@ -356,26 +356,26 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
     //av_packet_unref(&av_packet);
 }
 
-static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodec **codec,
-                            enum AVCodecID codec_id) {
-    *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
-    if (!*codec) {
+static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodecContext **audio_codec_context, int fps) {
+    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    if (!codec) {
         fprintf(
             stderr,
             "Error: Could not find aac encoder\n");
         exit(1);
     }
 
-    AVStream *stream = avformat_new_stream(av_format_context, *codec);
+    AVStream *stream = avformat_new_stream(av_format_context, nullptr);
     if (!stream) {
         fprintf(stderr, "Error: Could not allocate stream\n");
         exit(1);
     }
     stream->id = av_format_context->nb_streams - 1;
     fprintf(stderr, "audio stream id: %d\n", stream->id);
-    AVCodecContext *codec_context = stream->codec;
 
-    assert((*codec)->type == AVMEDIA_TYPE_AUDIO);
+    AVCodecContext *codec_context = avcodec_alloc_context3(codec);
+
+    assert(codec->type == AVMEDIA_TYPE_AUDIO);
     /*
     codec_context->sample_fmt = (*codec)->sample_fmts
                                     ? (*codec)->sample_fmts[0]
@@ -388,6 +388,14 @@ static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodec **
     codec_context->channel_layout = AV_CH_LAYOUT_STEREO;
     codec_context->channels = 2;
 
+    codec_context->time_base.num = 1;
+    codec_context->time_base.den = fps;
+
+    stream->time_base = codec_context->time_base;
+    stream->avg_frame_rate = av_inv_q(codec_context->time_base);
+
+    *audio_codec_context = codec_context;
+
     // Some formats want stream headers to be seperate
     //if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
     //    av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -395,35 +403,36 @@ static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodec **
     return stream;
 }
 
-static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **codec,
+static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodecContext **video_codec_context, 
                             VideoQuality video_quality,
                             int texture_width, int texture_height,
                             int fps, bool use_hevc) {
-    *codec = avcodec_find_encoder_by_name(use_hevc ? "hevc_nvenc" : "h264_nvenc");
-    if (!*codec) {
-        *codec = avcodec_find_encoder_by_name(use_hevc ? "nvenc_hevc" : "nvenc_h264");
+    const AVCodec *codec = avcodec_find_encoder_by_name(use_hevc ? "hevc_nvenc" : "h264_nvenc");
+    if (!codec) {
+        codec = avcodec_find_encoder_by_name(use_hevc ? "nvenc_hevc" : "nvenc_h264");
     }
-    if (!*codec) {
+    if (!codec) {
         fprintf(
             stderr,
             "Error: Could not find %s encoder\n", use_hevc ? "hevc" : "h264");
         exit(1);
     }
 
-    AVStream *stream = avformat_new_stream(av_format_context, *codec);
+    AVStream *stream = avformat_new_stream(av_format_context, nullptr);
     if (!stream) {
         fprintf(stderr, "Error: Could not allocate stream\n");
         exit(1);
     }
     stream->id = av_format_context->nb_streams - 1;
     fprintf(stderr, "video stream id: %d\n", stream->id);
-    AVCodecContext *codec_context = stream->codec;
+
+    AVCodecContext *codec_context = avcodec_alloc_context3(codec);
 
     //double fps_ratio = (double)fps / 30.0;
 
-    assert((*codec)->type == AVMEDIA_TYPE_VIDEO);
-    codec_context->codec_id = (*codec)->id;
-    fprintf(stderr, "codec id: %d\n", (*codec)->id);
+    assert(codec->type == AVMEDIA_TYPE_VIDEO);
+    codec_context->codec_id = codec->id;
+    fprintf(stderr, "codec id: %d\n", codec->id);
     codec_context->width = texture_width & ~1;
     codec_context->height = texture_height & ~1;
 	codec_context->bit_rate = 7500000 + (codec_context->width * codec_context->height) / 2;
@@ -478,14 +487,14 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodec **
     if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
         av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
+    *video_codec_context = codec_context;
+
     return stream;
 }
 
-static AVFrame* open_audio(AVCodec *codec, AVStream *stream) {
+static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
     int ret;
-    AVCodecContext *codec_context = stream->codec;
-
-    ret = avcodec_open2(codec_context, codec, nullptr);
+    ret = avcodec_open2(audio_codec_context, audio_codec_context->codec, nullptr);
     if(ret < 0) {
         fprintf(stderr, "failed to open codec, reason: %s\n", av_error_to_string(ret));
         exit(1);
@@ -497,10 +506,10 @@ static AVFrame* open_audio(AVCodec *codec, AVStream *stream) {
         exit(1);
     }
 
-    frame->nb_samples = codec_context->frame_size;
-    frame->format = codec_context->sample_fmt;
-	frame->channels = codec_context->channels;
-    frame->channel_layout = codec_context->channel_layout;
+    frame->nb_samples = audio_codec_context->frame_size;
+    frame->format = audio_codec_context->sample_fmt;
+	frame->channels = audio_codec_context->channels;
+    frame->channel_layout = audio_codec_context->channel_layout;
 
     ret = av_frame_get_buffer(frame, 0);
     if(ret < 0) {
@@ -511,11 +520,10 @@ static AVFrame* open_audio(AVCodec *codec, AVStream *stream) {
     return frame;
 }
 
-static void open_video(AVCodec *codec, AVStream *stream,
+static void open_video(AVCodecContext *codec_context,
                        WindowPixmap &window_pixmap, AVBufferRef **device_ctx,
                        CUgraphicsResource *cuda_graphics_resource) {
     int ret;
-    AVCodecContext *codec_context = stream->codec;
 
     std::vector<std::string> hardware_accelerated_devices =
         get_hardware_acceleration_device_names();
@@ -559,7 +567,7 @@ static void open_video(AVCodec *codec, AVStream *stream,
     codec_context->hw_device_ctx = *device_ctx;
     codec_context->hw_frames_ctx = frame_context;
 
-    ret = avcodec_open2(codec_context, codec, nullptr);
+    ret = avcodec_open2(codec_context, codec_context->codec, nullptr);
     if (ret < 0) {
         fprintf(stderr, "Error: Could not open video codec: %s\n",
                 "blabla"); // av_err2str(ret));
@@ -874,19 +882,18 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    AVOutputFormat *output_format = av_format_context->oformat;
+    const AVOutputFormat *output_format = av_format_context->oformat;
 
-    AVCodec *video_codec;
+    AVCodecContext *video_codec_context;
     AVStream *video_stream =
-        add_video_stream(av_format_context, &video_codec, quality, window_pixmap.texture_width, window_pixmap.texture_height, fps, strcmp(window_str, "screen") == 0);
+        add_video_stream(av_format_context, &video_codec_context, quality, window_pixmap.texture_width, window_pixmap.texture_height, fps, strcmp(window_str, "screen") == 0);
     if (!video_stream) {
         fprintf(stderr, "Error: Failed to create video stream\n");
         return 1;
     }
 
-    AVCodec *audio_codec;
-    AVStream *audio_stream =
-        add_audio_stream(av_format_context, &audio_codec, output_format->audio_codec);
+    AVCodecContext *audio_codec_context;
+    AVStream *audio_stream = add_audio_stream(av_format_context, &audio_codec_context, fps);
     if (!audio_stream) {
         fprintf(stderr, "Error: Failed to create audio stream\n");
         return 1;
@@ -894,10 +901,12 @@ int main(int argc, char **argv) {
 
     AVBufferRef *device_ctx;
     CUgraphicsResource cuda_graphics_resource;
-    open_video(video_codec, video_stream, window_pixmap, &device_ctx,
-               &cuda_graphics_resource);
+    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource);
 
-    AVFrame *audio_frame = open_audio(audio_codec, audio_stream);
+    avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
+
+    AVFrame *audio_frame = open_audio(audio_codec_context);
+    avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
 
     //av_dump_format(av_format_context, 0, filename, 1);
 
@@ -981,11 +990,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Error: Failed to allocate frame\n");
         exit(1);
     }
-    frame->format = video_stream->codec->pix_fmt;
-    frame->width = video_stream->codec->width;
-    frame->height = video_stream->codec->height;
+    frame->format = video_codec_context->pix_fmt;
+    frame->width = video_codec_context->width;
+    frame->height = video_codec_context->height;
 
-    if (av_hwframe_get_buffer(video_stream->codec->hw_frames_ctx, frame, 0) < 0) {
+    if (av_hwframe_get_buffer(video_codec_context->hw_frames_ctx, frame, 0) < 0) {
         fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
         exit(1);
     }
@@ -1009,31 +1018,26 @@ int main(int argc, char **argv) {
     SoundDevice sound_device;
     Arg &audio_input_arg = args["-a"];
     if(audio_input_arg.value) {
-        if(sound_device_get_by_name(&sound_device, audio_input_arg.value, audio_stream->codec->channels, audio_stream->codec->frame_size) != 0) {
+        if(sound_device_get_by_name(&sound_device, audio_input_arg.value, audio_codec_context->channels, audio_codec_context->frame_size) != 0) {
             fprintf(stderr, "failed to get 'pulse' sound device\n");
             exit(1);
         }
 
-        int audio_buffer_size = av_samples_get_buffer_size(NULL, audio_stream->codec->channels, audio_stream->codec->frame_size, audio_stream->codec->sample_fmt, 1);
+        int audio_buffer_size = av_samples_get_buffer_size(NULL, audio_codec_context->channels, audio_codec_context->frame_size, audio_codec_context->sample_fmt, 1);
         uint8_t *audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
-        avcodec_fill_audio_frame(audio_frame, audio_stream->codec->channels, audio_stream->codec->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
+        avcodec_fill_audio_frame(audio_frame, audio_codec_context->channels, audio_codec_context->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
 
-        audio_thread = std::thread([audio_buffer_size, record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
-            AVPacket audio_packet;
-            if(av_new_packet(&audio_packet, audio_buffer_size) != 0) {
-                fprintf(stderr, "Failed to create audio packet\n");
-                exit(1);
-            }
+        audio_thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, audio_codec_context, &frame_count](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
             
             SwrContext *swr = swr_alloc();
             if(!swr) {
                 fprintf(stderr, "Failed to create SwrContext\n");
                 exit(1);
             }
-            av_opt_set_int(swr, "in_channel_layout", audio_stream->codec->channel_layout, 0);
-            av_opt_set_int(swr, "out_channel_layout", audio_stream->codec->channel_layout, 0);
-            av_opt_set_int(swr, "in_sample_rate", audio_stream->codec->sample_rate, 0);
-            av_opt_set_int(swr, "out_sample_rate", audio_stream->codec->sample_rate, 0);
+            av_opt_set_int(swr, "in_channel_layout", audio_codec_context->channel_layout, 0);
+            av_opt_set_int(swr, "out_channel_layout", audio_codec_context->channel_layout, 0);
+            av_opt_set_int(swr, "in_sample_rate", audio_codec_context->sample_rate, 0);
+            av_opt_set_int(swr, "out_sample_rate", audio_codec_context->sample_rate, 0);
             av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_S16, 0);
             av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
             swr_init(swr);
@@ -1050,36 +1054,14 @@ int main(int argc, char **argv) {
                     //audio_frame->pts=audio_frame_index*100;
                     //++audio_frame_index;
 
-                    int got_frame = 0;
-                    int ret = avcodec_encode_audio2(audio_stream->codec, &audio_packet, audio_frame, &got_frame);
+                    //audio_frame->pts = frame_count;
+                    int ret = avcodec_send_frame(audio_codec_context, audio_frame);
                     if(ret < 0){
                         printf("Failed to encode!\n");
                         break;
                     }
-                    if (got_frame==1){
-                        //printf("Succeed to encode 1 frame! \tsize:%5d\n",pkt.size);
-                        audio_packet.stream_index = audio_stream->index;
-                        std::lock_guard<std::mutex> lock(*write_output_mutex);
-                        if(replay_buffer_size_secs != -1) {
-                            double time_now = glfwGetTime();
-                            double replay_time_elapsed = time_now - record_start_time;
-                            AVPacket *new_pack = new AVPacket();
-                            av_packet_move_ref(new_pack, &audio_packet);
-                            frame_data_queue.push_back(new_pack);
-                            if(replay_time_elapsed >= replay_buffer_size_secs) {
-                                av_packet_unref(frame_data_queue.front());
-                                delete frame_data_queue.front();
-                                frame_data_queue.pop_front();
-                                frames_erased = true;
-                            }
-                        } else {
-                            ret = av_interleaved_write_frame(av_format_context, &audio_packet);
-                            if(ret < 0) {
-                                fprintf(stderr, "Error: Failed to write audio frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
-                            }
-                        }
-                        av_packet_unref(&audio_packet);
-                    }
+                    if(ret >= 0)
+                        receive_frames(audio_codec_context, audio_stream, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
                 } else {
                     fprintf(stderr, "failed to read sound from device, error: %d\n", sound_buffer_size);
                 }
@@ -1140,7 +1122,7 @@ int main(int argc, char **argv) {
                 res = cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
 
                 av_frame_unref(frame);
-                if (av_hwframe_get_buffer(video_stream->codec->hw_frames_ctx, frame, 0) < 0) {
+                if (av_hwframe_get_buffer(video_codec_context->hw_frames_ctx, frame, 0) < 0) {
                     fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
                     running = false;
                     break;
@@ -1239,8 +1221,8 @@ int main(int argc, char **argv) {
 
             frame->pts = frame_count;
             frame_count += 1;
-            if (avcodec_send_frame(video_stream->codec, frame) >= 0) {
-                receive_frames(video_stream->codec, video_stream, av_format_context,
+            if (avcodec_send_frame(video_codec_context, frame) >= 0) {
+                receive_frames(video_codec_context, video_stream, av_format_context,
                                record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
             } else {
                 fprintf(stderr, "Error: avcodec_send_frame failed\n");
