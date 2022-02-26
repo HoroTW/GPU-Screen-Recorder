@@ -689,6 +689,8 @@ int main(int argc, char **argv) {
         }
     }
 
+    Arg &audio_input_arg = args["-a"];
+
     uint32_t region_x = 0;
     uint32_t region_y = 0;
     uint32_t region_width = 0;
@@ -892,21 +894,25 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    AVCodecContext *audio_codec_context;
-    AVStream *audio_stream = add_audio_stream(av_format_context, &audio_codec_context, fps);
-    if (!audio_stream) {
-        fprintf(stderr, "Error: Failed to create audio stream\n");
-        return 1;
-    }
-
     AVBufferRef *device_ctx;
     CUgraphicsResource cuda_graphics_resource;
     open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource);
-
     avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
-    AVFrame *audio_frame = open_audio(audio_codec_context);
-    avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
+
+    AVCodecContext *audio_codec_context;
+    AVStream *audio_stream;
+    AVFrame *audio_frame;
+    if(audio_input_arg.value) {
+        audio_stream = add_audio_stream(av_format_context, &audio_codec_context, fps);
+        if (!audio_stream) {
+            fprintf(stderr, "Error: Failed to create audio stream\n");
+            return 1;
+        }
+
+        audio_frame = open_audio(audio_codec_context);
+        avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
+    }
 
     //av_dump_format(av_format_context, 0, filename, 1);
 
@@ -1016,7 +1022,6 @@ int main(int argc, char **argv) {
     bool frames_erased = false;
 
     SoundDevice sound_device;
-    Arg &audio_input_arg = args["-a"];
     if(audio_input_arg.value) {
         if(sound_device_get_by_name(&sound_device, audio_input_arg.value, audio_codec_context->channels, audio_codec_context->frame_size) != 0) {
             fprintf(stderr, "failed to get 'pulse' sound device\n");
@@ -1027,7 +1032,7 @@ int main(int argc, char **argv) {
         uint8_t *audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
         avcodec_fill_audio_frame(audio_frame, audio_codec_context->channels, audio_codec_context->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
 
-        audio_thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, audio_codec_context, &frame_count](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
+        audio_thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, audio_codec_context](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
             
             SwrContext *swr = swr_alloc();
             if(!swr) {
