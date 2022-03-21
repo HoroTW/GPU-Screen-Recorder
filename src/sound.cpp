@@ -33,7 +33,7 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
 
     pa_simple *pa_handle = pa_simple_new(nullptr, "gpu-screen-recorder", PA_STREAM_RECORD, name, "record", &ss, nullptr, nullptr, &error);
     if(!pa_handle) {
-        fprintf(stderr, "pa_simple_new() failed: %s\n", pa_strerror(error));
+        fprintf(stderr, "pa_simple_new() failed: %s. Audio input device %s might not be valid\n", pa_strerror(error), name);
         return -1;
     }
 
