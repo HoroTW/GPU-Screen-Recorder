@@ -13,8 +13,10 @@ When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however 
 the fps remains at 30.
 
 # Installation
-Run `./build.sh` or if you are running Arch Linux, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
-Dependencies needed when building using `build.sh`: `glew glfw3 cuda ffmpeg libx11 libxcomposite libpulse-simple`.\
+If you are running an Arch Linux based distro, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
+If you are running an Ubuntu based distro then run `install_ubuntu.sh` as root: `sudo ./install_ubuntu.sh`.\
+
+On other distros you need to install dependencies manually and run `build.sh`. Dependencies: `glew glfw3 cuda ffmpeg libx11 libxcomposite libpulse-simple`.\
 Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
 
 # How to use
