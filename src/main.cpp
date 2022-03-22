@@ -413,7 +413,7 @@ static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodecCon
 
 static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodecContext **video_codec_context, 
                             VideoQuality video_quality,
-                            int texture_width, int texture_height,
+                            int record_width, int record_height,
                             int fps, bool use_hevc) {
     const AVCodec *codec = avcodec_find_encoder_by_name(use_hevc ? "hevc_nvenc" : "h264_nvenc");
     if (!codec) {
@@ -441,8 +441,8 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodecCon
     assert(codec->type == AVMEDIA_TYPE_VIDEO);
     codec_context->codec_id = codec->id;
     fprintf(stderr, "codec id: %d\n", codec->id);
-    codec_context->width = texture_width & ~1;
-    codec_context->height = texture_height & ~1;
+    codec_context->width = record_width & ~1;
+    codec_context->height = record_height & ~1;
 	codec_context->bit_rate = 7500000 + (codec_context->width * codec_context->height) / 2;
     // Timebase: This is the fundamental unit of time (in seconds) in terms
     // of which frame timestamps are represented. For fixed-fps content,
@@ -623,7 +623,7 @@ static void usage() {
     fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
     fprintf(stderr, "OPTIONS:\n");
     fprintf(stderr, "  -w    Window to record or a display or \"screen\". The display is the display name in xrandr and if \"screen\" is selected then all displays are recorded and they are recorded in h265 (aka hevc). Recording a display requires a gpu with NvFBC support.\n");
-    //fprintf(stderr, "  -s    The screen region to capture in format WxH+X+Y. This is only applicable when -w is a display or \"screen\". Optional, the entire window/display/screen is recorded by default.\n");
+    fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. Usually you want to set this to the size of the window. Optional, by default the size of the window, monitor or screen is used (which is passed to -w).\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at. Clamped to [1,250].\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Optional, disabled by default.\n");
@@ -675,6 +675,7 @@ int main(int argc, char **argv) {
         //{ "-s", Arg { nullptr, true } },
         { "-c", Arg { nullptr, false } },
         { "-f", Arg { nullptr, false } },
+        { "-s", Arg { nullptr, true } },
         { "-a", Arg { nullptr, true } },
         { "-q", Arg { nullptr, true } },
         { "-o", Arg { nullptr, true } },
@@ -787,10 +788,21 @@ int main(int argc, char **argv) {
         if(!nv_fbc_library.create(window_str, fps, &window_width, &window_height, region_x, region_y, region_width, region_height))
             return 1;
     } else {
+        errno = 0;
         src_window_id = strtol(window_str, nullptr, 0);
-        if(src_window_id == None && errno == EINVAL) {
+        if(src_window_id == None || errno == EINVAL) {
             fprintf(stderr, "Invalid window number %s\n", window_str);
             usage();
+        }
+    }
+
+    int record_width = window_width;
+    int record_height = window_height;
+    const char *record_area = args["-s"].value;
+    if(record_area) {
+        if(sscanf(record_area, "%dx%d", &record_width, &record_height) != 2) {
+            fprintf(stderr, "Invalid value for -s '%s', expected a value in format WxH\n", record_area);
+            return 1;
         }
     }
 
@@ -822,6 +834,9 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Error: Invalid window id: %lu\n", src_window_id);
             return 1;
         }
+
+        window_width = attr.width;
+        window_height = attr.height;
 
         XCompositeRedirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
 
@@ -868,6 +883,12 @@ int main(int argc, char **argv) {
                     src_window_id);
             return 1;
         }
+
+        if(!record_area) {
+            record_width = window_pixmap.texture_width;
+            record_height = window_pixmap.texture_height;
+            fprintf(stderr, "Record size: %dx%x\n", record_width, record_height);
+        }
     } else {
         window_pixmap.texture_id = 0;
         window_pixmap.target_texture_id = 0;
@@ -896,7 +917,7 @@ int main(int argc, char **argv) {
 
     AVCodecContext *video_codec_context;
     AVStream *video_stream =
-        add_video_stream(av_format_context, &video_codec_context, quality, window_pixmap.texture_width, window_pixmap.texture_height, fps, strcmp(window_str, "screen") == 0);
+        add_video_stream(av_format_context, &video_codec_context, quality, record_width, record_height, fps, strcmp(window_str, "screen") == 0);
     if (!video_stream) {
         fprintf(stderr, "Error: Failed to create video stream\n");
         return 1;
@@ -957,7 +978,7 @@ int main(int argc, char **argv) {
     // avcodec_close(av_codec_context);
 
     if(dpy)
-        XSelectInput(dpy, src_window_id, StructureNotifyMask);
+        XSelectInput(dpy, src_window_id, StructureNotifyMask | VisibilityChangeMask);
 
     /*
     int damage_event;
@@ -1013,14 +1034,15 @@ int main(int argc, char **argv) {
         exit(1);
     }
 
-    if(dpy) {
-        XWindowAttributes xwa;
-        XGetWindowAttributes(dpy, src_window_id, &xwa);
-        window_width = xwa.width;
-        window_height = xwa.height;
-    }
-    int original_texture_width = window_pixmap.texture_width;
-    int original_texture_height = window_pixmap.texture_height;
+    if(window_pixmap.texture_width < record_width)
+        frame->width = window_pixmap.texture_width & ~1;
+    else
+        frame->width = record_width & ~1;
+
+    if(window_pixmap.texture_height < record_height)
+        frame->height = window_pixmap.texture_height & ~1;
+    else
+        frame->height = record_height & ~1;
 
     std::mutex write_output_mutex;
     std::thread audio_thread;
@@ -1095,6 +1117,11 @@ int main(int argc, char **argv) {
         redraw = true;
 
         if(src_window_id) {
+            if (XCheckTypedWindowEvent(dpy, src_window_id, VisibilityNotify, &e)) {
+                window_resize_timer = glfwGetTime();
+                window_resized = true;
+            }
+
             if (XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e) && e.xconfigure.window == src_window_id) {
                 // Window resize
                 if(e.xconfigure.width != window_width || e.xconfigure.height != window_height) {
@@ -1153,15 +1180,17 @@ int main(int argc, char **argv) {
 
                 frame->pts = frame_count;
 
-                if(window_pixmap.texture_width < original_texture_width)
+                if(window_pixmap.texture_width < record_width)
                     frame->width = window_pixmap.texture_width & ~1;
                 else
-                    frame->width = original_texture_width & ~1;
+                    frame->width = record_width & ~1;
 
-                if(window_pixmap.texture_height < original_texture_height)
+                if(window_pixmap.texture_height < record_height)
                     frame->height = window_pixmap.texture_height & ~1;
                 else
-                    frame->height = original_texture_height & ~1;
+                    frame->height = record_height & ~1;
+
+                cuMemsetD8((CUdeviceptr)frame->data[0], 0, record_width * record_height * 4);
             }
         }
 

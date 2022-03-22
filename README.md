@@ -36,7 +36,6 @@ This gpu-screen-recorder keeps the window image on the GPU and sends it directly
 FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to an output video, and not when recording the screen when using x11grab. So FFMPEG has the same fps drop issues that OBS has.
 
 # TODO
-* Scale video when the window is rescaled.
 * Support AMD and Intel, using VAAPI. cuda and vaapi should be loaded at runtime using dlopen instead of linking to those
 libraries at compile-time.
 * Clean up the code!
