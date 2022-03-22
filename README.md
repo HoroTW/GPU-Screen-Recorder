@@ -6,7 +6,7 @@ This screen recorder can be used for recording your desktop offline, for live st
 where only the last few seconds are saved.
 
 ## Note
-Might now work when using a compositor such as picom when using the glx backend.\
+Might now work when using a compositor such as picom when using the glx backend. Using the xrender backend with picom fixes this issue.\
 Does not work when using gtk client side decorations (such as on Pop OS). Either disable those (if possible), install gtk-nocsd or record the whole monitor/screen if you have NvFBC.
 
 # Performance
