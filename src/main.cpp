@@ -1019,8 +1019,8 @@ int main(int argc, char **argv) {
         window_width = xwa.width;
         window_height = xwa.height;
     }
-    int original_window_width = window_width;
-    int original_window_height = window_height;
+    int original_texture_width = window_pixmap.texture_width;
+    int original_texture_height = window_pixmap.texture_height;
 
     std::mutex write_output_mutex;
     std::thread audio_thread;
@@ -1134,7 +1134,17 @@ int main(int argc, char **argv) {
                 res = cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
                 res = cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
 
-                av_frame_unref(frame);
+                av_frame_free(&frame);
+                frame = av_frame_alloc();
+                if (!frame) {
+                    fprintf(stderr, "Error: Failed to allocate frame\n");
+                    running = false;
+                    break;
+                }
+                frame->format = video_codec_context->pix_fmt;
+                frame->width = video_codec_context->width;
+                frame->height = video_codec_context->height;
+
                 if (av_hwframe_get_buffer(video_codec_context->hw_frames_ctx, frame, 0) < 0) {
                     fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
                     running = false;
@@ -1143,15 +1153,15 @@ int main(int argc, char **argv) {
 
                 frame->pts = frame_count;
 
-                if(window_width < original_window_width)
+                if(window_pixmap.texture_width < original_texture_width)
                     frame->width = window_pixmap.texture_width & ~1;
                 else
-                    frame->width = original_window_width;
+                    frame->width = original_texture_width & ~1;
 
-                if(window_height < original_window_height)
+                if(window_pixmap.texture_height < original_texture_height)
                     frame->height = window_pixmap.texture_height & ~1;
                 else
-                    frame->height = original_window_height;
+                    frame->height = original_texture_height & ~1;
             }
         }
 
