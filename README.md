@@ -6,7 +6,8 @@ This screen recorder can be used for recording your desktop offline, for live st
 where only the last few seconds are saved.
 
 ## Note
-Might now work when using a compositor such as picom when using the glx backend.
+Might now work when using a compositor such as picom when using the glx backend.\
+Does not work when using gtk client side decorations (such as on Pop OS). Either disable those (if possible), install gtk-nocsd or record the whole monitor/screen if you have NvFBC.
 
 # Performance
 When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however when using this screen recorder
