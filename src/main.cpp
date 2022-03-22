@@ -242,16 +242,22 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     // glEnable(GL_BLEND);
     // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    pixmap.texture_width = attr.width;
+    pixmap.texture_height = attr.height;
+
     glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,
-                             &pixmap.texture_width);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT,
-                             &pixmap.texture_height);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
                     GL_NEAREST); // GL_LINEAR );
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     GL_NEAREST); // GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
     //glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+
+    GLint gl_texture_width = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &gl_texture_width);
+    if(gl_texture_width == 0) {
+        fprintf(stderr, "Warning: failed to get texture size. You are probably running an unsupported compositor and recording the selected window doesn't work at the moment. A black window will be displayed instead\n");
+    }
+
     fprintf(stderr, "texture width: %d, height: %d\n", pixmap.texture_width,
            pixmap.texture_height);
 
