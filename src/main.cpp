@@ -61,6 +61,9 @@ extern "C" {
 
 //#include <CL/cl.h>
 
+// TODO: REMOVE!!!
+static bool direct_capture_sound_hack = false;
+
 static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
 
 static char* av_error_to_string(int err) {
@@ -328,14 +331,18 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
         av_packet.size = 0;
         int res = avcodec_receive_packet(av_codec_context, &av_packet);
         if (res == 0) { // we have a packet, send the packet to the muxer
-            //av_packet_rescale_ts(&av_packet, av_codec_context->time_base,
-            //                     stream->time_base);
-            if(av_packet.pts != AV_NOPTS_VALUE)
-                av_packet.pts = av_rescale_q(av_packet.pts, av_codec_context->time_base, stream->time_base);
-            if(av_packet.dts != AV_NOPTS_VALUE)
-                av_packet.dts = av_rescale_q(av_packet.dts, av_codec_context->time_base, stream->time_base);
+            if(direct_capture_sound_hack) {
+                av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
+                //av_packet.dts = AV_NOPTS_VALUE;
+            } else {
+                if(av_packet.pts != AV_NOPTS_VALUE)
+                    av_packet.pts = av_rescale_q(av_packet.pts, av_codec_context->time_base, stream->time_base);
+                if(av_packet.dts != AV_NOPTS_VALUE)
+                    av_packet.dts = av_rescale_q(av_packet.dts, av_codec_context->time_base, stream->time_base);
+            }
+
             av_packet.stream_index = stream->index;
-            //av_packet.dts = AV_NOPTS_VALUE;
+
 			std::lock_guard<std::mutex> lock(write_output_mutex);
             if(replay_buffer_size_secs != -1) {
                 double time_now = glfwGetTime();
@@ -629,7 +636,8 @@ static void close_video(AVStream *video_stream, AVFrame *frame) {
 static void usage() {
     fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
     fprintf(stderr, "OPTIONS:\n");
-    fprintf(stderr, "  -w    Window to record or a display or \"screen\". The display is the display name in xrandr and if \"screen\" is selected then all displays are recorded and they are recorded in h265 (aka hevc). Recording a display requires a gpu with NvFBC support.\n");
+    fprintf(stderr, "  -w    Window to record or a display, \"screen\" or \"screen-direct\". The display is the display name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded and they are recorded in h265 (aka hevc)."
+        "\"screen-direct\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Recording a display requires a gpu with NvFBC support.\n");
     fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. Usually you want to set this to the size of the window. Optional, by default the size of the window, monitor or screen is used (which is passed to -w).\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at. Clamped to [1,250].\n");
@@ -792,7 +800,13 @@ int main(int argc, char **argv) {
         if(!nv_fbc_library.load())
             return 1;
 
-        if(!nv_fbc_library.create(window_str, fps, &window_width, &window_height, region_x, region_y, region_width, region_height))
+        const char *capture_target = window_str;
+        const bool direct_capture = strcmp(window_str, "screen-direct") == 0;
+        direct_capture_sound_hack = direct_capture;
+        if(direct_capture)
+            capture_target = "screen";
+
+        if(!nv_fbc_library.create(capture_target, fps, &window_width, &window_height, region_x, region_y, region_width, region_height, direct_capture))
             return 1;
     } else {
         errno = 0;
@@ -923,7 +937,7 @@ int main(int argc, char **argv) {
     av_format_context->flags |= AVFMT_FLAG_GENPTS;
     const AVOutputFormat *output_format = av_format_context->oformat;
 
-    bool use_hevc = strcmp(window_str, "screen") == 0;
+    bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
     if(use_hevc && strcmp(container_format, "flv") == 0) {
         use_hevc = false;
         fprintf(stderr, "Warning: hevc is not compatible with flv, falling back to h264 instead.\n");
@@ -1066,6 +1080,7 @@ int main(int argc, char **argv) {
     bool frames_erased = false;
 
     SoundDevice sound_device;
+    uint8_t *audio_frame_buf;
     if(audio_input_arg.value) {
         if(sound_device_get_by_name(&sound_device, audio_input_arg.value, audio_codec_context->channels, audio_codec_context->frame_size) != 0) {
             fprintf(stderr, "failed to get 'pulse' sound device\n");
@@ -1073,7 +1088,7 @@ int main(int argc, char **argv) {
         }
 
         int audio_buffer_size = av_samples_get_buffer_size(NULL, audio_codec_context->channels, audio_codec_context->frame_size, audio_codec_context->sample_fmt, 1);
-        uint8_t *audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
+        audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
         avcodec_fill_audio_frame(audio_frame, audio_codec_context->channels, audio_codec_context->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
 
         audio_thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, audio_codec_context, &frame_count](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
@@ -1097,18 +1112,20 @@ int main(int argc, char **argv) {
                 void *sound_buffer;
                 int sound_buffer_size = sound_device_read_next_chunk(sound_device, &sound_buffer);
                 if(sound_buffer_size >= 0) {
-                    // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
-                    swr_convert(swr, &audio_frame_buf, audio_frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
-                    audio_frame->extended_data = &audio_frame_buf;
-
                     const int64_t pts = frame_count;
-                    if(pts == prev_frame_count) {
+                    if(!direct_capture_sound_hack && pts == prev_frame_count) {
                         prev_frame_count = pts;
                         continue;
                     }
                     prev_frame_count = pts;
 
-                    audio_frame->pts = pts;
+                    // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
+                    swr_convert(swr, &audio_frame_buf, audio_frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
+                    audio_frame->extended_data = &audio_frame_buf;
+
+                    if(!direct_capture_sound_hack)
+                        audio_frame->pts = pts;
+
                     int ret = avcodec_send_frame(audio_codec_context, audio_frame);
                     if(ret < 0){
                         printf("Failed to encode!\n");

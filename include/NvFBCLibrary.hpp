@@ -58,7 +58,7 @@ public:
     }
 
     // If |display_to_capture| is "screen", then the entire x11 screen is captured (all displays)
-    bool create(const char *display_to_capture, uint32_t fps, /*out*/ uint32_t *display_width, /*out*/ uint32_t *display_height, uint32_t x = 0, uint32_t y = 0, uint32_t width = 0, uint32_t height = 0) {
+    bool create(const char *display_to_capture, uint32_t fps, /*out*/ uint32_t *display_width, /*out*/ uint32_t *display_height, uint32_t x = 0, uint32_t y = 0, uint32_t width = 0, uint32_t height = 0, bool direct_capture = false) {
         if(!library || !display_to_capture || !display_width || !display_height || fbc_handle_created)
             return false;
 
@@ -122,7 +122,7 @@ public:
         memset(&create_capture_params, 0, sizeof(create_capture_params));
         create_capture_params.dwVersion = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER;
         create_capture_params.eCaptureType = NVFBC_CAPTURE_SHARED_CUDA;
-        create_capture_params.bWithCursor = NVFBC_TRUE;
+        create_capture_params.bWithCursor = direct_capture ? NVFBC_FALSE : NVFBC_TRUE;
         if(capture_region) {
             create_capture_params.captureBox = { x, y, width, height };
             *display_width = width;
@@ -131,8 +131,8 @@ public:
         create_capture_params.eTrackingType = tracking_type;
         create_capture_params.dwSamplingRateMs = 1000 / fps;
         // Cant use this, it breaks when a compositor is used
-        //create_capture_params.bAllowDirectCapture = NVFBC_TRUE;
-        //create_capture_params.bPushModel = NVFBC_TRUE;
+        create_capture_params.bAllowDirectCapture = direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
+        create_capture_params.bPushModel = direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
         if(tracking_type == NVFBC_TRACKING_OUTPUT)
             create_capture_params.dwOutputId = output_id;
 

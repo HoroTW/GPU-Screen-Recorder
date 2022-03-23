@@ -8,7 +8,8 @@ where only the last few seconds are saved.
 ## Note
 Might now work when using a compositor such as picom when using the glx backend. Using the xrender backend with picom fixes this issue.\
 Does not work when using gtk client side decorations (such as on Pop OS). Either disable those (if possible), install gtk-nocsd or record the whole monitor/screen if you have NvFBC.\
-NvFBC doesn't work with PRIME, so if you are using PRIME then you can't record the monitor/screen, you have to record a single window.
+NvFBC doesn't work with PRIME, so if you are using PRIME then you can't record the monitor/screen, you have to record a single window.\
+If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.
 
 # Performance
 When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however when using this screen recorder
@@ -42,4 +43,6 @@ libraries at compile-time.
 * Clean up the code!
 * Fix segfault in debug mode (happens because audio codec becomes NULL?)
 * Dynamically change bitrate/resolution to match desired fps. This would be helpful when streaming for example, where the encode output speed also depends on upload speed to the streaming service.
-* Show cursor when recording a single window. Currently the cursor can only be recorded when recording the monitor/screen (nvfbc).
+* Show cursor when recording. Currently the cursor is not visible when recording a window and it's disabled when recording screen-direct to allow direct nvfbc capture for fullscreen windows, which allows for better performance and variable refresh rate monitors to work.
+* Implement opengl injection to capture texture. This fixes composition issues and (VRR) without having to use NvFBC direct capture.
+* Always use direct capture with NvFBC once the capture issue in mpv fullscreen has been resolved.
