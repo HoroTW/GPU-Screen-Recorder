@@ -5,6 +5,7 @@ tests/sibs-build/
 tests/compile_commands.json
 
 .clangd/
+.cache/
 
 main.o
 sound.o

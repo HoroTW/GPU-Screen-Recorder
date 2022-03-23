@@ -24,6 +24,7 @@
 #include <thread>
 #include <mutex>
 #include <map>
+#include <atomic>
 #include <signal.h>
 
 #include <unistd.h>
@@ -45,6 +46,8 @@ extern "C" {
 #include <libavutil/hwcontext_cuda.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
+#include <libavutil/avutil.h>
+#include <libavutil/time.h>
 }
 #include <cudaGL.h>
 
@@ -325,10 +328,14 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
         av_packet.size = 0;
         int res = avcodec_receive_packet(av_codec_context, &av_packet);
         if (res == 0) { // we have a packet, send the packet to the muxer
-            av_packet_rescale_ts(&av_packet, av_codec_context->time_base,
-                                 stream->time_base);
+            //av_packet_rescale_ts(&av_packet, av_codec_context->time_base,
+            //                     stream->time_base);
+            if(av_packet.pts != AV_NOPTS_VALUE)
+                av_packet.pts = av_rescale_q(av_packet.pts, av_codec_context->time_base, stream->time_base);
+            if(av_packet.dts != AV_NOPTS_VALUE)
+                av_packet.dts = av_rescale_q(av_packet.dts, av_codec_context->time_base, stream->time_base);
             av_packet.stream_index = stream->index;
-            av_packet.dts = AV_NOPTS_VALUE;
+            //av_packet.dts = AV_NOPTS_VALUE;
 			std::lock_guard<std::mutex> lock(write_output_mutex);
             if(replay_buffer_size_secs != -1) {
                 double time_now = glfwGetTime();
@@ -887,7 +894,7 @@ int main(int argc, char **argv) {
         if(!record_area) {
             record_width = window_pixmap.texture_width;
             record_height = window_pixmap.texture_height;
-            fprintf(stderr, "Record size: %dx%x\n", record_width, record_height);
+            fprintf(stderr, "Record size: %dx%d\n", record_width, record_height);
         }
     } else {
         window_pixmap.texture_id = 0;
@@ -913,11 +920,18 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    av_format_context->flags |= AVFMT_FLAG_GENPTS;
     const AVOutputFormat *output_format = av_format_context->oformat;
+
+    bool use_hevc = strcmp(window_str, "screen") == 0;
+    if(use_hevc && strcmp(container_format, "flv") == 0) {
+        use_hevc = false;
+        fprintf(stderr, "Warning: hevc is not compatible with flv, falling back to h264 instead.\n");
+    }
 
     AVCodecContext *video_codec_context;
     AVStream *video_stream =
-        add_video_stream(av_format_context, &video_codec_context, quality, record_width, record_height, fps, strcmp(window_str, "screen") == 0);
+        add_video_stream(av_format_context, &video_codec_context, quality, record_width, record_height, fps, use_hevc);
     if (!video_stream) {
         fprintf(stderr, "Error: Failed to create video stream\n");
         return 1;
@@ -992,7 +1006,7 @@ int main(int argc, char **argv) {
     XDamageSubtract(dpy, damage,None,None);
     */
 
-    int frame_count = 0;
+    std::atomic_int frame_count(0);
 
     CUcontext old_ctx;
     CUarray mapped_array;
@@ -1062,7 +1076,7 @@ int main(int argc, char **argv) {
         uint8_t *audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
         avcodec_fill_audio_frame(audio_frame, audio_codec_context->channels, audio_codec_context->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
 
-        audio_thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, audio_codec_context](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
+        audio_thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, audio_codec_context, &frame_count](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
             
             SwrContext *swr = swr_alloc();
             if(!swr) {
@@ -1077,6 +1091,8 @@ int main(int argc, char **argv) {
             av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
             swr_init(swr);
 
+            int64_t prev_frame_count = 0;
+
             while(running) {
                 void *sound_buffer;
                 int sound_buffer_size = sound_device_read_next_chunk(sound_device, &sound_buffer);
@@ -1084,12 +1100,15 @@ int main(int argc, char **argv) {
                     // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
                     swr_convert(swr, &audio_frame_buf, audio_frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
                     audio_frame->extended_data = &audio_frame_buf;
-                    // TODO: Fix this. Warning from ffmpeg:
-                    // Timestamps are unset in a packet for stream 1. This is deprecated and will stop working in the future. Fix your code to set the timestamps properly
-                    //audio_frame->pts=audio_frame_index*100;
-                    //++audio_frame_index;
 
-                    //audio_frame->pts = frame_count;
+                    const int64_t pts = frame_count;
+                    if(pts == prev_frame_count) {
+                        prev_frame_count = pts;
+                        continue;
+                    }
+                    prev_frame_count = pts;
+
+                    audio_frame->pts = pts;
                     int ret = avcodec_send_frame(audio_codec_context, audio_frame);
                     if(ret < 0){
                         printf("Failed to encode!\n");
@@ -1177,8 +1196,6 @@ int main(int argc, char **argv) {
                     running = false;
                     break;
                 }
-
-                frame->pts = frame_count;
 
                 if(window_pixmap.texture_width < record_width)
                     frame->width = window_pixmap.texture_width & ~1;
@@ -1311,15 +1328,24 @@ int main(int argc, char **argv) {
 
         //fprintf(stderr, "Frame start index: %zu\n", start_index);
 
+        int64_t pos = 0;
         int64_t pts_offset = 0;
-        if(frames_erased)
+        int64_t dts_offset = 0;
+        if(frames_erased) {
+            pos = frame_data_queue[start_index]->pos;
             pts_offset = frame_data_queue[start_index]->pts;
+            dts_offset = frame_data_queue[start_index]->dts;
+        }
 
         for(size_t i = start_index; i < frame_data_queue.size(); ++i) {
             AVPacket *av_packet = frame_data_queue[i];
-            if(av_packet->stream_index == video_stream->index) {
-                av_packet->pos = -1;
+
+            if(av_packet->stream_index == audio_stream->index) {
+                av_packet->pts = AV_NOPTS_VALUE;
+                av_packet->dts = AV_NOPTS_VALUE;
+            } else {
                 av_packet->pts -= pts_offset;
+                //av_packet->pos -= pos;
                 av_packet->dts = AV_NOPTS_VALUE;
             }
             av_packet->pos = -1;
