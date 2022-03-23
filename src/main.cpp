@@ -257,7 +257,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     if(pixmap.texture_width == 0 || pixmap.texture_height == 0) {
         pixmap.texture_width = attr.width;
         pixmap.texture_height = attr.height;
-        fprintf(stderr, "Warning: failed to get texture size. You are probably running an unsupported compositor and recording the selected window doesn't work at the moment. A black window will be displayed instead\n");
+        fprintf(stderr, "Warning: failed to get texture size. You are probably running an unsupported compositor and recording the selected window doesn't work at the moment. This could also happen if you are trying to record a window with client-side decorations (GNOME issue). A black window will be displayed instead. A workaround is to record the whole monitor (which use NvFBC).\n");
     }
 
     fprintf(stderr, "texture width: %d, height: %d\n", pixmap.texture_width,
