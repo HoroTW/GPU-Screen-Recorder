@@ -7,7 +7,8 @@ where only the last few seconds are saved.
 
 ## Note
 Might now work when using a compositor such as picom when using the glx backend. Using the xrender backend with picom fixes this issue.\
-Does not work when using gtk client side decorations (such as on Pop OS). Either disable those (if possible), install gtk-nocsd or record the whole monitor/screen if you have NvFBC.
+Does not work when using gtk client side decorations (such as on Pop OS). Either disable those (if possible), install gtk-nocsd or record the whole monitor/screen if you have NvFBC.\
+NvFBC doesn't work with PRIME, so if you are using PRIME then you can't record the monitor/screen, you have to record a single window.
 
 # Performance
 When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however when using this screen recorder
