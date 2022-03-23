@@ -122,7 +122,7 @@ public:
         memset(&create_capture_params, 0, sizeof(create_capture_params));
         create_capture_params.dwVersion = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER;
         create_capture_params.eCaptureType = NVFBC_CAPTURE_SHARED_CUDA;
-        create_capture_params.bWithCursor = NVFBC_FALSE;
+        create_capture_params.bWithCursor = NVFBC_TRUE;
         if(capture_region) {
             create_capture_params.captureBox = { x, y, width, height };
             *display_width = width;

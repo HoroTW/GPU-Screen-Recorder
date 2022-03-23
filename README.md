@@ -42,3 +42,4 @@ libraries at compile-time.
 * Clean up the code!
 * Fix segfault in debug mode (happens because audio codec becomes NULL?)
 * Dynamically change bitrate/resolution to match desired fps. This would be helpful when streaming for example, where the encode output speed also depends on upload speed to the streaming service.
+* Show cursor when recording a single window. Currently the cursor can only be recorded when recording the monitor/screen (nvfbc).
