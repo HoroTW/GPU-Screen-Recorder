@@ -1357,7 +1357,7 @@ int main(int argc, char **argv) {
         for(size_t i = start_index; i < frame_data_queue.size(); ++i) {
             AVPacket *av_packet = frame_data_queue[i];
 
-            if(av_packet->stream_index == audio_stream->index) {
+            if(av_packet->stream_index != video_stream->index) {
                 av_packet->pts = AV_NOPTS_VALUE;
                 av_packet->dts = AV_NOPTS_VALUE;
             } else {
