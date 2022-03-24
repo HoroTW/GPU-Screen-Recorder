@@ -1358,8 +1358,10 @@ int main(int argc, char **argv) {
             AVPacket *av_packet = frame_data_queue[i];
 
             if(av_packet->stream_index != video_stream->index) {
-                av_packet->pts = AV_NOPTS_VALUE;
-                av_packet->dts = AV_NOPTS_VALUE;
+                if(!direct_capture_sound_hack) {
+                    av_packet->pts = AV_NOPTS_VALUE;
+                    av_packet->dts = AV_NOPTS_VALUE;
+                }
             } else {
                 av_packet->pts -= pts_offset;
                 //av_packet->pos -= pos;
