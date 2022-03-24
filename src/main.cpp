@@ -873,6 +873,7 @@ int main(int argc, char **argv) {
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
+        glfwWindowHint(GLFW_VISIBLE, GL_FALSE);
 
         window = glfwCreateWindow(1, 1, "gpu-screen-recorder", nullptr, nullptr);
         if (!window) {
@@ -883,7 +884,6 @@ int main(int argc, char **argv) {
 
         glfwMakeContextCurrent(window);
         glfwSwapInterval(0);
-        glfwHideWindow(window);
 
     //#if defined(DEBUG)
         XSetErrorHandler(x11_error_handler);
