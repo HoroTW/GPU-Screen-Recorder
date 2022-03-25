@@ -720,7 +720,7 @@ static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContex
     }
 
     save_replay_output_filepath = output_dir + "/Replay_" + get_date_str() + "." + container_format;
-    save_replay_thread = std::async(std::launch::async, [video_stream_index, audio_stream_index, container_format, start_index, pts_offset, video_codec_context, audio_codec_context]() mutable {
+    save_replay_thread = std::async(std::launch::async, [video_stream_index, container_format, start_index, pts_offset, video_codec_context, audio_codec_context]() mutable {
         AVFormatContext *av_format_context;
         // The output format is automatically guessed from the file extension
         avformat_alloc_output_context2(&av_format_context, nullptr, container_format.c_str(), nullptr);
@@ -730,7 +730,7 @@ static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContex
             av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
         AVStream *video_stream = create_stream(av_format_context, video_codec_context);
-        AVStream *audio_stream = audio_stream_index == -1 ? nullptr : create_stream(av_format_context, audio_codec_context);
+        AVStream *audio_stream = audio_codec_context ? create_stream(av_format_context, audio_codec_context) : nullptr;
 
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
         if(audio_stream)
