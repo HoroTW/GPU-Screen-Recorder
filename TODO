@@ -6,6 +6,5 @@ Use nvEncoder api directly? maybe with this we could copy the window opengl text
 Load cuda at runtime with dlopen.
 Track window damages and only update then. That is better for output file size.
 Remove cuda to cuda copy when using nvFBC if possible. ffmpeg is getting in the way.
-Use av_fifo.
 Getting the texture of a window when using a compositor is an nvidia specific limitation. When gpu-screen-recorder supports other gpus then this can be ignored.
 Remove dependency on glfw (and glew?).

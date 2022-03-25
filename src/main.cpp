@@ -26,6 +26,7 @@
 #include <map>
 #include <atomic>
 #include <signal.h>
+#include <sys/stat.h>
 
 #include <unistd.h>
 
@@ -58,11 +59,14 @@ extern "C" {
 #include "../include/NvFBCLibrary.hpp"
 
 #include <deque>
+#include <future>
 
 //#include <CL/cl.h>
 
 // TODO: REMOVE!!!
 static bool direct_capture_sound_hack = false;
+static const int VIDEO_STREAM_INDEX = 0;
+static const int AUDIO_STREAM_INDEX = 1;
 
 static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
 
@@ -317,10 +321,11 @@ std::vector<std::string> get_hardware_acceleration_device_names() {
     return {deviceName};
 }
 
-static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
+// |stream| is only required for non-replay mode
+static void receive_frames(AVCodecContext *av_codec_context, int stream_index, AVStream *stream,
                            AVFormatContext *av_format_context,
                            double replay_start_time,
-                           std::deque<AVPacket*> &frame_data_queue,
+                           std::deque<AVPacket> &frame_data_queue,
                            int replay_buffer_size_secs,
                            bool &frames_erased,
 						   std::mutex &write_output_mutex) {
@@ -331,33 +336,33 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
         av_packet.size = 0;
         int res = avcodec_receive_packet(av_codec_context, &av_packet);
         if (res == 0) { // we have a packet, send the packet to the muxer
-            if(direct_capture_sound_hack) {
-                av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
-                //av_packet.dts = AV_NOPTS_VALUE;
-            } else {
-                if(av_packet.pts != AV_NOPTS_VALUE)
-                    av_packet.pts = av_rescale_q(av_packet.pts, av_codec_context->time_base, stream->time_base);
-                if(av_packet.dts != AV_NOPTS_VALUE)
-                    av_packet.dts = av_rescale_q(av_packet.dts, av_codec_context->time_base, stream->time_base);
-            }
-
-            av_packet.stream_index = stream->index;
+            av_packet.stream_index = stream_index;
 
 			std::lock_guard<std::mutex> lock(write_output_mutex);
             if(replay_buffer_size_secs != -1) {
                 double time_now = glfwGetTime();
                 double replay_time_elapsed = time_now - replay_start_time;
 
-                AVPacket *new_pack = new AVPacket();
-                av_packet_move_ref(new_pack, &av_packet);
-                frame_data_queue.push_back(new_pack);
+                AVPacket new_pack;
+                av_packet_move_ref(&new_pack, &av_packet);
+                frame_data_queue.push_back(std::move(new_pack));
                 if(replay_time_elapsed >= replay_buffer_size_secs) {
-                    av_packet_unref(frame_data_queue.front());
-                    delete frame_data_queue.front();
+                    av_packet_unref(&frame_data_queue.front());
                     frame_data_queue.pop_front();
                     frames_erased = true;
                 }
             } else {
+                if(direct_capture_sound_hack) {
+                    av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
+                    //av_packet.dts = AV_NOPTS_VALUE;
+                } else {
+                    if(av_packet.pts != AV_NOPTS_VALUE)
+                        av_packet.pts = av_rescale_q(av_packet.pts, av_codec_context->time_base, stream->time_base);
+                    if(av_packet.dts != AV_NOPTS_VALUE)
+                        av_packet.dts = av_rescale_q(av_packet.dts, av_codec_context->time_base, stream->time_base);
+                }
+
+                av_packet.stream_index = stream->index;
                 int ret = av_interleaved_write_frame(av_format_context, &av_packet);
                 if(ret < 0) {
                     fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
@@ -378,7 +383,7 @@ static void receive_frames(AVCodecContext *av_codec_context, AVStream *stream,
     //av_packet_unref(&av_packet);
 }
 
-static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodecContext **audio_codec_context, int fps) {
+static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_context, int fps) {
     const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
     if (!codec) {
         fprintf(
@@ -386,14 +391,6 @@ static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodecCon
             "Error: Could not find aac encoder\n");
         exit(1);
     }
-
-    AVStream *stream = avformat_new_stream(av_format_context, nullptr);
-    if (!stream) {
-        fprintf(stderr, "Error: Could not allocate stream\n");
-        exit(1);
-    }
-    stream->id = av_format_context->nb_streams - 1;
-    fprintf(stderr, "audio stream id: %d\n", stream->id);
 
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
 
@@ -413,19 +410,14 @@ static AVStream *add_audio_stream(AVFormatContext *av_format_context, AVCodecCon
     codec_context->time_base.num = 1;
     codec_context->time_base.den = fps;
 
-    stream->time_base = codec_context->time_base;
-    stream->avg_frame_rate = av_inv_q(codec_context->time_base);
-
-    *audio_codec_context = codec_context;
-
     // Some formats want stream headers to be seperate
-    //if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
-    //    av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
+        av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    return stream;
+    return codec_context;
 }
 
-static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodecContext **video_codec_context, 
+static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_context, 
                             VideoQuality video_quality,
                             int record_width, int record_height,
                             int fps, bool use_hevc) {
@@ -439,14 +431,6 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodecCon
             "Error: Could not find %s encoder\n", use_hevc ? "hevc" : "h264");
         exit(1);
     }
-
-    AVStream *stream = avformat_new_stream(av_format_context, nullptr);
-    if (!stream) {
-        fprintf(stderr, "Error: Could not allocate stream\n");
-        exit(1);
-    }
-    stream->id = av_format_context->nb_streams - 1;
-    fprintf(stderr, "video stream id: %d\n", stream->id);
 
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
 
@@ -497,8 +481,6 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodecCon
             //codec_context->profile = FF_PROFILE_H264_HIGH;
             break;
     }
-    stream->time_base = codec_context->time_base;
-    stream->avg_frame_rate = av_inv_q(codec_context->time_base);
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
         codec_context->mb_decision = 2;
 
@@ -509,9 +491,7 @@ static AVStream *add_video_stream(AVFormatContext *av_format_context, AVCodecCon
     if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
         av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
-    *video_codec_context = codec_context;
-
-    return stream;
+    return codec_context;
 }
 
 static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
@@ -646,14 +626,22 @@ static void usage() {
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
-    fprintf(stderr, "  -o    The output file path. If omitted, then the encoded data is sent to stdout.\n");
+    fprintf(stderr, "  -o    The output file path. If omitted then the encoded data is sent to stdout. Required in replay mode (when using -r). In replay mode this has to be an existing directory instead of a file.\n");
+    fprintf(stderr, "NOTES:\n");
+    fprintf(stderr, "  Send signal SIGINT (Ctrl+C) to gpu-screen-recorder to stop and save the recording (when not using replay mode).\n");
+    fprintf(stderr, "  Send signal SIGUSR1 (killall -SIGUSR1 gpu-screen-recorder) to gpu-screen-recorder to save a replay.\n");
     exit(1);
 }
 
 static sig_atomic_t running = 1;
+static sig_atomic_t save_replay = 0;
 
-static void int_handler(int dummy) {
+static void int_handler(int) {
     running = 0;
+}
+
+static void save_replay_handler(int) {
+    save_replay = 1;
 }
 
 struct Arg {
@@ -682,8 +670,122 @@ static bool contains_non_hex_number(const char *str) {
     return false;
 }
 
+static std::string get_date_str() {
+    char str[128];
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    strftime(str, sizeof(str)-1, "%Y-%m-%d_%H-%M-%S", t);
+    return str; 
+}
+
+static AVStream* create_stream(AVFormatContext *av_format_context, AVCodecContext *codec_context) {
+    AVStream *stream = avformat_new_stream(av_format_context, nullptr);
+    if (!stream) {
+        fprintf(stderr, "Error: Could not allocate stream\n");
+        exit(1);
+    }
+    stream->id = av_format_context->nb_streams - 1;
+    stream->time_base = codec_context->time_base;
+    stream->avg_frame_rate = av_inv_q(codec_context->time_base);
+    return stream;
+}
+
+static std::future<void> save_replay_thread;
+static std::vector<AVPacket> save_replay_packets;
+static std::string save_replay_output_filepath;
+
+static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContext *audio_codec_context, int video_stream_index, int audio_stream_index, const std::deque<AVPacket> &frame_data_queue, bool frames_erased, std::string output_dir, std::string container_format) {
+    if(save_replay_thread.valid())
+        return;
+    
+    size_t start_index = (size_t)-1;
+    for(size_t i = 0; i < frame_data_queue.size(); ++i) {
+        const AVPacket &av_packet = frame_data_queue[i];
+        if((av_packet.flags & AV_PKT_FLAG_KEY) && av_packet.stream_index == video_stream_index) {
+            start_index = i;
+            break;
+        }
+    }
+
+    if(start_index == (size_t)-1)
+        return;
+
+    int64_t pts_offset = 0;
+    if(frames_erased)
+        pts_offset = frame_data_queue[start_index].pts;
+
+    save_replay_packets.resize(frame_data_queue.size());
+    for(size_t i = 0; i < frame_data_queue.size(); ++i) {
+        av_packet_ref(&save_replay_packets[i], &frame_data_queue[i]);
+    }
+
+    save_replay_output_filepath = output_dir + "/Replay_" + get_date_str() + "." + container_format;
+    save_replay_thread = std::async(std::launch::async, [video_stream_index, audio_stream_index, container_format, start_index, pts_offset, video_codec_context, audio_codec_context]() mutable {
+        AVFormatContext *av_format_context;
+        // The output format is automatically guessed from the file extension
+        avformat_alloc_output_context2(&av_format_context, nullptr, container_format.c_str(), nullptr);
+
+        av_format_context->flags |= AVFMT_FLAG_GENPTS;
+        if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
+            av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+        AVStream *video_stream = create_stream(av_format_context, video_codec_context);
+        AVStream *audio_stream = audio_stream_index == -1 ? nullptr : create_stream(av_format_context, audio_codec_context);
+
+        avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
+        if(audio_stream)
+            avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
+
+        int ret = avio_open(&av_format_context->pb, save_replay_output_filepath.c_str(), AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            fprintf(stderr, "Error: Could not open '%s': %s. Make sure %s is an existing directory with write access\n", save_replay_output_filepath.c_str(), av_error_to_string(ret), save_replay_output_filepath.c_str());
+            return;
+        }
+
+        ret = avformat_write_header(av_format_context, nullptr);
+        if (ret < 0) {
+            fprintf(stderr, "Error occurred when writing header to output file: %s\n", av_error_to_string(ret));
+            return;
+        }
+
+        for(size_t i = start_index; i < save_replay_packets.size(); ++i) {
+            AVPacket &av_packet = save_replay_packets[i];
+
+            AVStream *stream = av_packet.stream_index == video_stream_index ? video_stream : audio_stream;
+
+            if(direct_capture_sound_hack) {
+                av_packet_rescale_ts(&av_packet, video_codec_context->time_base, stream->time_base);
+                //av_packet.dts = AV_NOPTS_VALUE;
+            } else {
+                if(av_packet.pts != AV_NOPTS_VALUE)
+                    av_packet.pts = av_rescale_q(av_packet.pts, video_codec_context->time_base, stream->time_base);
+                if(av_packet.dts != AV_NOPTS_VALUE)
+                    av_packet.dts = av_rescale_q(av_packet.dts, video_codec_context->time_base, stream->time_base);
+            }
+
+            av_packet.stream_index = stream->index;
+
+            if(!direct_capture_sound_hack || av_packet.stream_index == video_stream->index) {
+                av_packet.pts -= av_rescale_q(pts_offset, video_codec_context->time_base, stream->time_base);
+                av_packet.dts -= av_rescale_q(pts_offset, video_codec_context->time_base, stream->time_base);
+            }
+
+            int ret = av_interleaved_write_frame(av_format_context, &av_packet);
+            if(ret < 0)
+                fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
+        }
+
+        if (av_write_trailer(av_format_context) != 0)
+            fprintf(stderr, "Failed to write trailer\n");
+
+        avio_close(av_format_context->pb);
+        avformat_free_context(av_format_context);
+    });
+}
+
 int main(int argc, char **argv) {
     signal(SIGINT, int_handler);
+    signal(SIGUSR1, save_replay_handler);
 
     std::map<std::string, Arg> args = {
         { "-w", Arg { nullptr, false } },
@@ -828,8 +930,22 @@ int main(int argc, char **argv) {
     }
 
     const char *filename = args["-o"].value;
-    if(!filename)
-        filename = "/dev/stdout";
+    if(filename) {
+        if(replay_buffer_size_secs != -1) {
+            struct stat buf;
+            if(stat(filename, &buf) == -1 || !S_ISDIR(buf.st_mode)) {
+                fprintf(stderr, "%s does not exist or is not a directory\n", filename);
+                usage();
+            }
+        }
+    } else {
+        if(replay_buffer_size_secs == -1) {
+            filename = "/dev/stdout";
+        } else {
+            fprintf(stderr, "Option -o is required when using option -r\n");
+            usage();
+        }
+    }
 
     const double target_fps = 1.0 / (double)fps;
 
@@ -943,41 +1059,37 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Warning: hevc is not compatible with flv, falling back to h264 instead.\n");
     }
 
-    AVCodecContext *video_codec_context;
-    AVStream *video_stream =
-        add_video_stream(av_format_context, &video_codec_context, quality, record_width, record_height, fps, use_hevc);
-    if (!video_stream) {
-        fprintf(stderr, "Error: Failed to create video stream\n");
-        return 1;
-    }
+    AVStream *video_stream = nullptr;
+    AVStream *audio_stream = nullptr;
+
+    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, record_width, record_height, fps, use_hevc);
+    if(replay_buffer_size_secs == -1)
+        video_stream = create_stream(av_format_context, video_codec_context);
 
     AVBufferRef *device_ctx;
     CUgraphicsResource cuda_graphics_resource;
     open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource);
-    avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
+    if(video_stream)
+        avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
-
-    AVCodecContext *audio_codec_context;
-    AVStream *audio_stream;
-    AVFrame *audio_frame;
+    AVCodecContext *audio_codec_context = nullptr;
+    AVFrame *audio_frame = nullptr;
     if(audio_input_arg.value) {
-        audio_stream = add_audio_stream(av_format_context, &audio_codec_context, fps);
-        if (!audio_stream) {
-            fprintf(stderr, "Error: Failed to create audio stream\n");
-            return 1;
-        }
+        audio_codec_context = create_audio_codec_context(av_format_context, fps);
+        if(replay_buffer_size_secs == -1)
+            audio_stream = create_stream(av_format_context, audio_codec_context);
 
         audio_frame = open_audio(audio_codec_context);
-        avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
+        if(audio_stream)
+            avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
     }
 
     //av_dump_format(av_format_context, 0, filename, 1);
 
-    if (!(output_format->flags & AVFMT_NOFILE)) {
+    if (replay_buffer_size_secs == -1 && !(output_format->flags & AVFMT_NOFILE)) {
         int ret = avio_open(&av_format_context->pb, filename, AVIO_FLAG_WRITE);
         if (ret < 0) {
-            fprintf(stderr, "Error: Could not open '%s': %s\n", filename,
-                    "blabla"); // av_err2str(ret));
+            fprintf(stderr, "Error: Could not open '%s': %s\n", filename, av_error_to_string(ret));
             return 1;
         }
     }
@@ -985,11 +1097,12 @@ int main(int argc, char **argv) {
     //video_stream->duration = AV_TIME_BASE * 15;
     //audio_stream->duration = AV_TIME_BASE * 15;
     //av_format_context->duration = AV_TIME_BASE * 15;
-    int ret = avformat_write_header(av_format_context, nullptr);
-    if (ret < 0) {
-        fprintf(stderr, "Error occurred when opening output file: %s\n",
-                "blabla"); // av_err2str(ret));
-        return 1;
+    if(replay_buffer_size_secs == -1) {
+        int ret = avformat_write_header(av_format_context, nullptr);
+        if (ret < 0) {
+            fprintf(stderr, "Error occurred when writing header to output file: %s\n", av_error_to_string(ret));
+            return 1;
+        }
     }
 
     AVHWDeviceContext *hw_device_context =
@@ -1076,7 +1189,7 @@ int main(int argc, char **argv) {
     std::thread audio_thread;
 
     double record_start_time = glfwGetTime();
-    std::deque<AVPacket*> frame_data_queue;
+    std::deque<AVPacket> frame_data_queue;
     bool frames_erased = false;
 
     SoundDevice sound_device;
@@ -1128,11 +1241,11 @@ int main(int argc, char **argv) {
 
                     int ret = avcodec_send_frame(audio_codec_context, audio_frame);
                     if(ret < 0){
-                        printf("Failed to encode!\n");
+                        fprintf(stderr, "Failed to encode!\n");
                         break;
                     }
                     if(ret >= 0)
-                        receive_frames(audio_codec_context, audio_stream, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
+                        receive_frames(audio_codec_context, AUDIO_STREAM_INDEX, audio_stream, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
                 } else {
                     fprintf(stderr, "failed to read sound from device, error: %d\n", sound_buffer_size);
                 }
@@ -1279,28 +1392,8 @@ int main(int argc, char **argv) {
                     uint32_t byte_size;
                     CUdeviceptr src_cu_device_ptr;
                     frame_captured = nv_fbc_library.capture(&src_cu_device_ptr, &byte_size);
-                    if(frame_captured) {
-                        // TODO: Is it possible to bypass this copy?
-                        /*
-                        CUDA_MEMCPY2D memcpy_struct;
-                        memcpy_struct.srcXInBytes = 0;
-                        memcpy_struct.srcY = 0;
-                        memcpy_struct.srcMemoryType = CUmemorytype::CU_MEMORYTYPE_DEVICE;
-
-                        memcpy_struct.dstXInBytes = 0;
-                        memcpy_struct.dstY = 0;
-                        memcpy_struct.dstMemoryType = CUmemorytype::CU_MEMORYTYPE_DEVICE;
-
-                        memcpy_struct.srcDevice = src_cu_device_ptr;
-                        memcpy_struct.dstDevice = (CUdeviceptr)frame->data[0];
-                        memcpy_struct.dstPitch = frame->linesize[0];
-                        memcpy_struct.WidthInBytes = frame->width * 4;
-                        memcpy_struct.Height = frame->height;
-                        cuMemcpy2D(&memcpy_struct);
-                        */
+                    if(frame_captured)
                         cuMemcpyDtoD((CUdeviceptr)frame->data[0], src_cu_device_ptr, byte_size);
-                        //frame->data[0] = (uint8_t*)src_cu_device_ptr;
-                    }
                 }
                 // res = cuCtxPopCurrent(&old_ctx);
             }
@@ -1308,11 +1401,25 @@ int main(int argc, char **argv) {
             frame->pts = frame_count;
             frame_count += 1;
             if (avcodec_send_frame(video_codec_context, frame) >= 0) {
-                receive_frames(video_codec_context, video_stream, av_format_context,
+                receive_frames(video_codec_context, VIDEO_STREAM_INDEX, video_stream, av_format_context,
                                record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
             } else {
                 fprintf(stderr, "Error: avcodec_send_frame failed\n");
             }
+        }
+
+        if(save_replay_thread.valid() && save_replay_thread.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            save_replay_thread.get();
+            puts(save_replay_output_filepath.c_str());
+            for(size_t i = 0; i < save_replay_packets.size(); ++i) {
+                av_packet_unref(&save_replay_packets[i]);
+            }
+            save_replay_packets.clear();
+        }
+
+        if(save_replay == 1 && !save_replay_thread.valid() && replay_buffer_size_secs != -1) {
+            save_replay = 0;
+            save_replay_async(video_codec_context, audio_codec_context, VIDEO_STREAM_INDEX, AUDIO_STREAM_INDEX, frame_data_queue, frames_erased, filename, container_format);
         }
 
         // av_frame_free(&frame);
@@ -1324,86 +1431,22 @@ int main(int argc, char **argv) {
     }
 
 	running = 0;
-	if(audio_input_arg.value) {
-	    audio_thread.join();
+
+    if(save_replay_thread.valid())
+        save_replay_thread.get();
+
+    if(audio_input_arg.value) {
+        audio_thread.join();
         sound_device_close(&sound_device);
     }
 
-
-    if(replay_buffer_size_secs != -1) {
-        size_t start_index = 0;
-        for(size_t i = 0; i < frame_data_queue.size(); ++i) {
-            AVPacket *av_packet = frame_data_queue[i];
-            if((av_packet->flags & AV_PKT_FLAG_KEY) && av_packet->stream_index == video_stream->index) {
-                start_index = i;
-                break;
-            } else {
-                //av_packet_unref(av_packet);
-                //delete av_packet;
-            }
-        }
-
-        //fprintf(stderr, "Frame start index: %zu\n", start_index);
-
-        int64_t pos = 0;
-        int64_t pts_offset = 0;
-        int64_t dts_offset = 0;
-        if(frames_erased) {
-            pos = frame_data_queue[start_index]->pos;
-            pts_offset = frame_data_queue[start_index]->pts;
-            dts_offset = frame_data_queue[start_index]->dts;
-        }
-
-        for(size_t i = start_index; i < frame_data_queue.size(); ++i) {
-            AVPacket *av_packet = frame_data_queue[i];
-
-            if(av_packet->stream_index != video_stream->index) {
-                if(!direct_capture_sound_hack) {
-                    av_packet->pts = AV_NOPTS_VALUE;
-                    av_packet->dts = AV_NOPTS_VALUE;
-                }
-            } else {
-                av_packet->pts -= pts_offset;
-                //av_packet->pos -= pos;
-                av_packet->dts = AV_NOPTS_VALUE;
-            }
-            av_packet->pos = -1;
-            int ret = av_interleaved_write_frame(av_format_context, av_packet);
-            if(ret < 0) {
-                fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
-            }
-            //av_packet_unref(av_packet);
-            //delete av_packet;
-        }
-    }
-
-	//Flush Encoder
-	#if 0
-	ret = flush_encoder(pFormatCtx,0);
-	if (ret < 0) {
-		printf("Flushing encoder failed\n");
-		return -1;
-	}
-	#endif
-
-    if (av_write_trailer(av_format_context) != 0) {
+    if (replay_buffer_size_secs == -1 && av_write_trailer(av_format_context) != 0) {
         fprintf(stderr, "Failed to write trailer\n");
     }
 
-    /* add sequence end code to have a real MPEG file */
-    /*
-    const uint8_t endcode[] = { 0, 0, 1, 0xb7 };
-    if (video_codec->id == AV_CODEC_ID_MPEG1VIDEO || video_codec->id == AV_CODEC_ID_MPEG2VIDEO)
-        write(STDOUT_FILENO, endcode, sizeof(endcode));
-    */
-
-    // close_video(video_stream, NULL);
-
-     if(!(output_format->flags & AVFMT_NOFILE))
+    if(replay_buffer_size_secs == -1 && !(output_format->flags & AVFMT_NOFILE))
         avio_close(av_format_context->pb);
-    // avformat_free_context(av_format_context);
 
-    // cleanup_window_pixmap(dpy, window_pixmap);
     if(dpy) {
         XCompositeUnredirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
         XCloseDisplay(dpy);

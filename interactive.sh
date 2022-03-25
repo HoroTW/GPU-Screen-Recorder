@@ -1,27 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh -e
 
-set -e
-
-print_selected_window_id() {
-    xwininfo | grep 'Window id:' | cut -d' ' -f4
-}
+selected_audio_input="$(pactl get-default-sink).monitor"
 
 echo "Select a window to record"
-window_id=$(print_selected_window_id)
+window_id=$(xdotool selectwindow)
 
 echo -n "Enter video fps: "
 read fps
-
-echo "Select audio input:"
-selected_audio_input=""
-select audio_input in $(pactl list | sed -rn 's/Monitor Source: (.*)/\1/p'); do
-    if [ "$audio_input" == "" ]; then
-        echo "Invalid option $REPLY"
-    else
-        selected_audio_input="$audio_input"
-        break
-    fi
-done
 
 echo -n "Enter output file name: "
 read output_file_name

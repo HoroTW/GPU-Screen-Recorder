@@ -23,9 +23,10 @@ On other distros you need to install dependencies manually and run `build.sh`. D
 Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
 
 # How to use
-Run `interactive.sh` or run gpu-screen-recorder directly, for example: `gpu-screen-recorder -w 0x1c00001 -c mp4 -f 60 -a bluez_sink.00_18_09_8A_07_93.a2dp_sink.monitor > test_video.mp4`\
-Then stop the screen recorder with Ctrl+C.\
-There is also a gui for the gpu-screen-recorder, called [gpu-screen-recorder-gtk](https://git.dec05eba.com/gpu-screen-recorder-gtk/).
+Run `interactive.sh` or run gpu-screen-recorder directly, for example: `gpu-screen-recorder -w $(xdotool selectwindow) -c mp4 -f 60 -a "$(pactl get-default-sink).monitor" -o test_video.mp4`\
+Then stop the screen recorder with Ctrl+C, which will also save the recording.\
+Send signal SIGUSR1 (`killall -SIGUSR1 gpu-screen-recorder`) to gpu-screen-recorder when in replay mode to save the replay. The paths to the saved files is output to stdout after the recording is saved.\
+There is also a gui for the gpu-screen-recorder called [gpu-screen-recorder-gtk](https://git.dec05eba.com/gpu-screen-recorder-gtk/).
 
 # Demo
 [![Click here to watch a demo video on youtube](https://img.youtube.com/vi/n5tm0g01n6A/0.jpg)](https://www.youtube.com/watch?v=n5tm0g01n6A)
