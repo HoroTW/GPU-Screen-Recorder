@@ -63,8 +63,6 @@ extern "C" {
 
 //#include <CL/cl.h>
 
-// TODO: REMOVE!!!
-static bool direct_capture_sound_hack = false;
 static const int VIDEO_STREAM_INDEX = 0;
 static const int AUDIO_STREAM_INDEX = 1;
 
@@ -352,15 +350,10 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
                     frames_erased = true;
                 }
             } else {
-                if(direct_capture_sound_hack) {
-                    av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
-                    //av_packet.dts = AV_NOPTS_VALUE;
-                } else {
-                    if(av_packet.pts != AV_NOPTS_VALUE)
-                        av_packet.pts = av_rescale_q(av_packet.pts, av_codec_context->time_base, stream->time_base);
-                    if(av_packet.dts != AV_NOPTS_VALUE)
-                        av_packet.dts = av_rescale_q(av_packet.dts, av_codec_context->time_base, stream->time_base);
-                }
+                if(av_packet.pts != AV_NOPTS_VALUE)
+                    av_packet.pts = av_rescale_q(av_packet.pts, av_codec_context->time_base, stream->time_base);
+                if(av_packet.dts != AV_NOPTS_VALUE)
+                    av_packet.dts = av_rescale_q(av_packet.dts, av_codec_context->time_base, stream->time_base);
 
                 av_packet.stream_index = stream->index;
                 int ret = av_interleaved_write_frame(av_format_context, &av_packet);
@@ -753,22 +746,14 @@ static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContex
 
             AVStream *stream = av_packet.stream_index == video_stream_index ? video_stream : audio_stream;
 
-            if(direct_capture_sound_hack) {
-                av_packet_rescale_ts(&av_packet, video_codec_context->time_base, stream->time_base);
-                //av_packet.dts = AV_NOPTS_VALUE;
-            } else {
-                if(av_packet.pts != AV_NOPTS_VALUE)
-                    av_packet.pts = av_rescale_q(av_packet.pts, video_codec_context->time_base, stream->time_base);
-                if(av_packet.dts != AV_NOPTS_VALUE)
-                    av_packet.dts = av_rescale_q(av_packet.dts, video_codec_context->time_base, stream->time_base);
-            }
+            if(av_packet.pts != AV_NOPTS_VALUE)
+                av_packet.pts = av_rescale_q(av_packet.pts, video_codec_context->time_base, stream->time_base);
+            if(av_packet.dts != AV_NOPTS_VALUE)
+                av_packet.dts = av_rescale_q(av_packet.dts, video_codec_context->time_base, stream->time_base);
 
             av_packet.stream_index = stream->index;
-
-            if(!direct_capture_sound_hack || av_packet.stream_index == video_stream->index) {
-                av_packet.pts -= av_rescale_q(pts_offset, video_codec_context->time_base, stream->time_base);
-                av_packet.dts -= av_rescale_q(pts_offset, video_codec_context->time_base, stream->time_base);
-            }
+            av_packet.pts -= av_rescale_q(pts_offset, video_codec_context->time_base, stream->time_base);
+            av_packet.dts -= av_rescale_q(pts_offset, video_codec_context->time_base, stream->time_base);
 
             int ret = av_interleaved_write_frame(av_format_context, &av_packet);
             if(ret < 0)
@@ -904,7 +889,6 @@ int main(int argc, char **argv) {
 
         const char *capture_target = window_str;
         const bool direct_capture = strcmp(window_str, "screen-direct") == 0;
-        direct_capture_sound_hack = direct_capture;
         if(direct_capture)
             capture_target = "screen";
 
@@ -1226,7 +1210,7 @@ int main(int argc, char **argv) {
                 int sound_buffer_size = sound_device_read_next_chunk(sound_device, &sound_buffer);
                 if(sound_buffer_size >= 0) {
                     const int64_t pts = frame_count;
-                    if(!direct_capture_sound_hack && pts == prev_frame_count) {
+                    if(pts == prev_frame_count) {
                         prev_frame_count = pts;
                         continue;
                     }
@@ -1235,9 +1219,7 @@ int main(int argc, char **argv) {
                     // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
                     swr_convert(swr, &audio_frame_buf, audio_frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
                     audio_frame->extended_data = &audio_frame_buf;
-
-                    if(!direct_capture_sound_hack)
-                        audio_frame->pts = pts;
+                    audio_frame->pts = frame_count;
 
                     int ret = avcodec_send_frame(audio_codec_context, audio_frame);
                     if(ret < 0){
