@@ -16,7 +16,6 @@
 */
 
 #include <assert.h>
-#include <libavutil/pixfmt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
@@ -24,7 +23,6 @@
 #include <thread>
 #include <mutex>
 #include <map>
-#include <atomic>
 #include <signal.h>
 #include <sys/stat.h>
 
@@ -41,6 +39,7 @@
 #include <X11/extensions/Xcomposite.h>
 
 extern "C" {
+#include <libavutil/pixfmt.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/hwcontext.h>
@@ -102,6 +101,14 @@ enum class VideoQuality {
     HIGH,
     ULTRA
 };
+
+static double clock_get_monotonic_seconds() {
+    struct timespec ts;
+    ts.tv_sec = 0;
+    ts.tv_nsec = 0;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 0.000000001;
+}
 
 static bool x11_supports_composite_named_window_pixmap(Display *dpy) {
     int extension_major;
@@ -320,7 +327,7 @@ std::vector<std::string> get_hardware_acceleration_device_names() {
 }
 
 // |stream| is only required for non-replay mode
-static void receive_frames(AVCodecContext *av_codec_context, int stream_index, AVStream *stream,
+static void receive_frames(AVCodecContext *av_codec_context, int stream_index, AVStream *stream, AVFrame *frame,
                            AVFormatContext *av_format_context,
                            double replay_start_time,
                            std::deque<AVPacket> &frame_data_queue,
@@ -335,6 +342,7 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
         int res = avcodec_receive_packet(av_codec_context, &av_packet);
         if (res == 0) { // we have a packet, send the packet to the muxer
             av_packet.stream_index = stream_index;
+            av_packet.pts = av_packet.dts = frame->pts;
 
 			std::lock_guard<std::mutex> lock(write_output_mutex);
             if(replay_buffer_size_secs != -1) {
@@ -350,15 +358,11 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
                     frames_erased = true;
                 }
             } else {
-                if(av_packet.pts != AV_NOPTS_VALUE)
-                    av_packet.pts = av_rescale_q(av_packet.pts, av_codec_context->time_base, stream->time_base);
-                if(av_packet.dts != AV_NOPTS_VALUE)
-                    av_packet.dts = av_rescale_q(av_packet.dts, av_codec_context->time_base, stream->time_base);
-
+                av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
                 av_packet.stream_index = stream->index;
                 int ret = av_interleaved_write_frame(av_format_context, &av_packet);
                 if(ret < 0) {
-                    fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
+                    fprintf(stderr, "Error: Failed to write frame index %d to muxer, reason: %s (%d)\n", av_packet.stream_index, av_error_to_string(ret), ret);
                 }
             }
             av_packet_unref(&av_packet);
@@ -401,7 +405,9 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
     codec_context->channels = 2;
 
     codec_context->time_base.num = 1;
-    codec_context->time_base.den = fps;
+    codec_context->time_base.den = AV_TIME_BASE;
+    codec_context->framerate.num = 1;
+    codec_context->framerate.den = fps;
 
     // Some formats want stream headers to be seperate
     if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
@@ -440,9 +446,9 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     // timebase should be 1/framerate and timestamp increments should be
     // identical to 1
     codec_context->time_base.num = 1;
-    codec_context->time_base.den = fps;
-    // codec_context->framerate.num = 60;
-    // codec_context->framerate.den = 1;
+    codec_context->time_base.den = AV_TIME_BASE;
+    codec_context->framerate.num = 1;
+    codec_context->framerate.den = fps;
     codec_context->sample_aspect_ratio.num = 0;
     codec_context->sample_aspect_ratio.den = 0;
     codec_context->gop_size = fps * 2;
@@ -679,7 +685,7 @@ static AVStream* create_stream(AVFormatContext *av_format_context, AVCodecContex
     }
     stream->id = av_format_context->nb_streams - 1;
     stream->time_base = codec_context->time_base;
-    stream->avg_frame_rate = av_inv_q(codec_context->time_base);
+    stream->avg_frame_rate = av_inv_q(codec_context->framerate);
     return stream;
 }
 
@@ -745,19 +751,16 @@ static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContex
             AVPacket &av_packet = save_replay_packets[i];
 
             AVStream *stream = av_packet.stream_index == video_stream_index ? video_stream : audio_stream;
-
-            if(av_packet.pts != AV_NOPTS_VALUE)
-                av_packet.pts = av_rescale_q(av_packet.pts, video_codec_context->time_base, stream->time_base);
-            if(av_packet.dts != AV_NOPTS_VALUE)
-                av_packet.dts = av_rescale_q(av_packet.dts, video_codec_context->time_base, stream->time_base);
+            AVCodecContext *codec_context = av_packet.stream_index == video_stream_index ? video_codec_context : audio_codec_context;
 
             av_packet.stream_index = stream->index;
-            av_packet.pts -= av_rescale_q(pts_offset, video_codec_context->time_base, stream->time_base);
-            av_packet.dts -= av_rescale_q(pts_offset, video_codec_context->time_base, stream->time_base);
+            av_packet.pts -= pts_offset;
+            av_packet.dts -= pts_offset;
+            av_packet_rescale_ts(&av_packet, codec_context->time_base, stream->time_base);
 
             int ret = av_interleaved_write_frame(av_format_context, &av_packet);
             if(ret < 0)
-                fprintf(stderr, "Error: Failed to write video frame to muxer, reason: %s (%d)\n", av_error_to_string(ret), ret);
+                fprintf(stderr, "Error: Failed to write frame index %d to muxer, reason: %s (%d)\n", stream->index, av_error_to_string(ret), ret);
         }
 
         if (av_write_trailer(av_format_context) != 0)
@@ -1117,7 +1120,7 @@ int main(int argc, char **argv) {
     XDamageSubtract(dpy, damage,None,None);
     */
 
-    std::atomic_int frame_count(0);
+    const double start_time_pts = clock_get_monotonic_seconds();
 
     CUcontext old_ctx;
     CUarray mapped_array;
@@ -1188,7 +1191,7 @@ int main(int argc, char **argv) {
         audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
         avcodec_fill_audio_frame(audio_frame, audio_codec_context->channels, audio_codec_context->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
 
-        audio_thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, audio_codec_context, &frame_count](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
+        audio_thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, audio_codec_context, start_time_pts, fps](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
             
             SwrContext *swr = swr_alloc();
             if(!swr) {
@@ -1203,23 +1206,14 @@ int main(int argc, char **argv) {
             av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
             swr_init(swr);
 
-            int64_t prev_frame_count = 0;
-
             while(running) {
                 void *sound_buffer;
                 int sound_buffer_size = sound_device_read_next_chunk(sound_device, &sound_buffer);
                 if(sound_buffer_size >= 0) {
-                    const int64_t pts = frame_count;
-                    if(pts == prev_frame_count) {
-                        prev_frame_count = pts;
-                        continue;
-                    }
-                    prev_frame_count = pts;
-
                     // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
                     swr_convert(swr, &audio_frame_buf, audio_frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
                     audio_frame->extended_data = &audio_frame_buf;
-                    audio_frame->pts = frame_count;
+                    audio_frame->pts = (clock_get_monotonic_seconds() - start_time_pts) * AV_TIME_BASE;
 
                     int ret = avcodec_send_frame(audio_codec_context, audio_frame);
                     if(ret < 0){
@@ -1227,7 +1221,7 @@ int main(int argc, char **argv) {
                         break;
                     }
                     if(ret >= 0)
-                        receive_frames(audio_codec_context, AUDIO_STREAM_INDEX, audio_stream, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
+                        receive_frames(audio_codec_context, AUDIO_STREAM_INDEX, audio_stream, audio_frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
                 } else {
                     fprintf(stderr, "failed to read sound from device, error: %d\n", sound_buffer_size);
                 }
@@ -1349,6 +1343,14 @@ int main(int argc, char **argv) {
                         window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
                         window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
                         window_pixmap.texture_width, window_pixmap.texture_height, 1);
+                    int err = glGetError();
+                    if(err != 0) {
+                        static bool error_shown = false;
+                        if(!error_shown) {
+                            error_shown = true;
+                            fprintf(stderr, "Error: glCopyImageSubData failed, gl error: %d\n", err);
+                        }
+                    }
                     glfwSwapBuffers(window);
                     // int err = glGetError();
                     // fprintf(stderr, "error: %d\n", err);
@@ -1380,10 +1382,9 @@ int main(int argc, char **argv) {
                 // res = cuCtxPopCurrent(&old_ctx);
             }
 
-            frame->pts = frame_count;
-            frame_count += 1;
+            frame->pts = (clock_get_monotonic_seconds() - start_time_pts) * AV_TIME_BASE;
             if (avcodec_send_frame(video_codec_context, frame) >= 0) {
-                receive_frames(video_codec_context, VIDEO_STREAM_INDEX, video_stream, av_format_context,
+                receive_frames(video_codec_context, VIDEO_STREAM_INDEX, video_stream, frame, av_format_context,
                                record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
             } else {
                 fprintf(stderr, "Error: avcodec_send_frame failed\n");
