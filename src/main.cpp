@@ -1405,6 +1405,12 @@ int main(int argc, char **argv) {
         if (frame_time_overflow >= 0.0) {
             frame_timer_start = time_now - frame_time_overflow;
 
+            if(dpy && src_window_id) {
+                XWindowAttributes attr;
+                if(!XGetWindowAttributes(dpy, src_window_id, &attr))
+                    running = 0;
+            }
+
             bool frame_captured = true;
             if(redraw) {
                 redraw = false;

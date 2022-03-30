@@ -8,3 +8,4 @@ Track window damages and only update then. That is better for output file size.
 Remove cuda to cuda copy when using nvFBC if possible. ffmpeg is getting in the way.
 Getting the texture of a window when using a compositor is an nvidia specific limitation. When gpu-screen-recorder supports other gpus then this can be ignored.
 Remove dependency on glfw (and glew?).
+Quickly changing workspace and back while recording under i3 breaks the screen recorder. The resize is triggered and it fails to recreate texture (fail to get texture size, texture id probably == 0).
