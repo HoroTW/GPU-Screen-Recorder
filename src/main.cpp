@@ -1314,6 +1314,10 @@ int main(int argc, char **argv) {
         redraw = true;
 
         if(src_window_id) {
+            if (XCheckTypedWindowEvent(dpy, src_window_id, DestroyNotify, &e)) {
+                running = 0;
+            }
+
             if (XCheckTypedWindowEvent(dpy, src_window_id, VisibilityNotify, &e)) {
                 window_resize_timer = glfwGetTime();
                 window_resized = true;
@@ -1404,12 +1408,6 @@ int main(int argc, char **argv) {
         double frame_time_overflow = frame_timer_elapsed - target_fps;
         if (frame_time_overflow >= 0.0) {
             frame_timer_start = time_now - frame_time_overflow;
-
-            if(dpy && src_window_id) {
-                XWindowAttributes attr;
-                if(!XGetWindowAttributes(dpy, src_window_id, &attr))
-                    running = 0;
-            }
 
             bool frame_captured = true;
             if(redraw) {
