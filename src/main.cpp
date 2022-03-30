@@ -27,6 +27,7 @@
 #include <sys/stat.h>
 
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "../include/sound.hpp"
 
@@ -632,8 +633,16 @@ static void usage() {
     exit(1);
 }
 
+static sig_atomic_t started = 0;
 static sig_atomic_t running = 1;
 static sig_atomic_t save_replay = 0;
+static const char *pid_file = "/tmp/gpu-screen-recorder";
+
+static void term_handler(int) {
+    if(started)
+        unlink(pid_file);
+    exit(0);
+}
 
 static void int_handler(int) {
     running = 0;
@@ -771,9 +780,69 @@ static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContex
     });
 }
 
+static bool is_process_running_program(pid_t pid, const char *program_name) {
+    char filepath[256];
+    snprintf(filepath, sizeof(filepath), "/proc/%ld/exe", (long)pid);
+
+    char resolved_path[PATH_MAX];
+    const ssize_t resolved_path_len = readlink(filepath, resolved_path, sizeof(resolved_path) - 1);
+    if(resolved_path_len == -1)
+        return false;
+    
+    resolved_path[resolved_path_len] = '\0';
+
+    const int program_name_len = strlen(program_name);
+    return resolved_path_len >= program_name_len && memcmp(resolved_path + resolved_path_len - program_name_len, program_name, program_name_len) == 0;
+}
+
+static void handle_existing_pid_file() {
+    char buffer[256];
+    int fd = open(pid_file, O_RDONLY);
+    if(fd == -1)
+        return;
+
+    ssize_t bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+    if(bytes_read < 0) {
+        perror("failed to read gpu-screen-recorder pid file");
+        exit(1);
+    }
+    buffer[bytes_read] = '\0';
+    close(fd);
+
+    long pid = 0;
+    if(sscanf(buffer, "%ld %120s", &pid, buffer) == 2) {
+        if(is_process_running_program(pid, "gpu-screen-recorder")) {
+            fprintf(stderr, "Error: gpu-screen-recorder is already running\n");
+            exit(1);
+        }
+    } else {
+        fprintf(stderr, "Warning: gpu-screen-recorder pid file is in incorrect format, it's possible that its corrupt. Replacing file and continuing...\n");
+    }
+    unlink(pid_file);
+}
+
+static void handle_new_pid_file(const char *mode) {
+    int fd = open(pid_file, O_WRONLY|O_CREAT|O_TRUNC, 0777);
+    if(fd == -1) {
+        perror("failed to create gpu-screen-recorder pid file");
+        exit(1);
+    }
+
+    char buffer[256];
+    const int buffer_size = snprintf(buffer, sizeof(buffer), "%ld %s", (long)getpid(), mode);
+    if(write(fd, buffer, buffer_size) == -1) {
+        perror("failed to write gpu-screen-recorder pid file");
+        exit(1);
+    }
+    close(fd);
+}
+
 int main(int argc, char **argv) {
+    signal(SIGTERM, term_handler);
     signal(SIGINT, int_handler);
     signal(SIGUSR1, save_replay_handler);
+
+    handle_existing_pid_file();
 
     std::map<std::string, Arg> args = {
         { "-w", Arg { nullptr, false } },
@@ -1231,6 +1300,9 @@ int main(int argc, char **argv) {
         }, av_format_context, audio_stream, audio_frame_buf, &sound_device, audio_frame, &write_output_mutex);
     }
 
+    handle_new_pid_file(replay_buffer_size_secs == -1 ? "record" : "replay");
+    started = 1;
+
     bool redraw = true;
     XEvent e;
     while (running) {
@@ -1434,4 +1506,6 @@ int main(int argc, char **argv) {
         XCompositeUnredirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
         XCloseDisplay(dpy);
     }
+
+    unlink(pid_file);
 }
