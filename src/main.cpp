@@ -310,23 +310,6 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     return pixmap.texture_id != 0 && pixmap.target_texture_id != 0;
 }
 
-std::vector<std::string> get_hardware_acceleration_device_names() {
-    int iGpu = 0;
-    int nGpu = 0;
-    cuDeviceGetCount(&nGpu);
-    if (iGpu < 0 || iGpu >= nGpu) {
-        fprintf(stderr, "Error: failed...\n");
-        return {};
-    }
-
-    CUdevice cuDevice = 0;
-    cuDeviceGet(&cuDevice, iGpu);
-    char deviceName[80];
-    cuDeviceGetName(deviceName, sizeof(deviceName), cuDevice);
-    fprintf(stderr, "device name: %s\n", deviceName);
-    return {deviceName};
-}
-
 // |stream| is only required for non-replay mode
 static void receive_frames(AVCodecContext *av_codec_context, int stream_index, AVStream *stream, AVFrame *frame,
                            AVFormatContext *av_format_context,
@@ -438,7 +421,6 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
 
     assert(codec->type == AVMEDIA_TYPE_VIDEO);
     codec_context->codec_id = codec->id;
-    fprintf(stderr, "codec id: %d\n", codec->id);
     codec_context->width = record_width & ~1;
     codec_context->height = record_height & ~1;
 	codec_context->bit_rate = 7500000 + (codec_context->width * codec_context->height) / 2;
@@ -464,6 +446,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
+            av_opt_set(codec_context->priv_data, "preset", "p4", 0);
             break;
         case VideoQuality::HIGH:
             codec_context->qmin = 12;
@@ -471,6 +454,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
+            av_opt_set(codec_context->priv_data, "preset", "p6", 0);
             break;
         case VideoQuality::ULTRA:
 	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
@@ -479,6 +463,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
             //av_opt_set(codec_context->priv_data, "preset", "veryslow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
+            av_opt_set(codec_context->priv_data, "preset", "p7", 0);
             break;
     }
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
@@ -486,6 +471,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
 
     // stream->time_base = codec_context->time_base;
     // codec_context->ticks_per_frame = 30;
+    av_opt_set(codec_context->priv_data, "tune", "hq", 0);
 
     // Some formats want stream headers to be seperate
     if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
@@ -524,24 +510,20 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
 
 static void open_video(AVCodecContext *codec_context,
                        WindowPixmap &window_pixmap, AVBufferRef **device_ctx,
-                       CUgraphicsResource *cuda_graphics_resource) {
+                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context) {
     int ret;
 
-    std::vector<std::string> hardware_accelerated_devices =
-        get_hardware_acceleration_device_names();
-    if (hardware_accelerated_devices.empty()) {
-        fprintf(
-            stderr,
-            "Error: No hardware accelerated device was found on your system\n");
+    *device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
+    if(!*device_ctx) {
+        fprintf(stderr, "Error: Failed to create hardware device context\n");
         exit(1);
     }
 
-    if (av_hwdevice_ctx_create(device_ctx, AV_HWDEVICE_TYPE_CUDA,
-                               hardware_accelerated_devices[0].c_str(), NULL,
-                               0) < 0) {
-        fprintf(stderr,
-                "Error: Failed to create hardware device context for gpu: %s\n",
-                hardware_accelerated_devices[0].c_str());
+    AVHWDeviceContext *hw_device_context = (AVHWDeviceContext *)(*device_ctx)->data;
+    AVCUDADeviceContext *cuda_device_context = (AVCUDADeviceContext *)hw_device_context->hwctx;
+    cuda_device_context->cuda_ctx = cuda_context;
+    if(av_hwdevice_ctx_init(*device_ctx) < 0) {
+        fprintf(stderr, "Error: Failed to create hardware device context\n");
         exit(1);
     }
 
@@ -576,21 +558,11 @@ static void open_video(AVCodecContext *codec_context,
         exit(1);
     }
 
-    AVHWDeviceContext *hw_device_context =
-        (AVHWDeviceContext *)(*device_ctx)->data;
-    AVCUDADeviceContext *cuda_device_context =
-        (AVCUDADeviceContext *)hw_device_context->hwctx;
-    CUcontext *cuda_context = &(cuda_device_context->cuda_ctx);
-    if (!cuda_context) {
-        fprintf(stderr, "Error: No cuda context\n");
-        exit(1);
-    }
-
     if(window_pixmap.target_texture_id != 0) {
         CUresult res;
         CUcontext old_ctx;
         res = cuCtxPopCurrent(&old_ctx);
-        res = cuCtxPushCurrent(*cuda_context);
+        res = cuCtxPushCurrent(cuda_context);
         res = cuGraphicsGLRegisterImage(
             cuda_graphics_resource, window_pixmap.target_texture_id, GL_TEXTURE_2D,
             CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
@@ -930,21 +902,34 @@ int main(int argc, char **argv) {
 
     res = cuInit(0);
     if(res != CUDA_SUCCESS) {
-        fprintf(stderr, "Error: cuInit failed (result: %d)\n", res);
-        return {};
+        const char *err_str;
+        cuGetErrorString(res, &err_str);
+        fprintf(stderr, "Error: cuInit failed, error %s (result: %d)\n", err_str, res);
+        return 1;
+    }
+
+    int nGpu = 0;
+    cuDeviceGetCount(&nGpu);
+    if (nGpu <= 0) {
+        fprintf(stderr, "Error: no cuda supported devices found\n");
+        return 1;
     }
 
     CUdevice cu_dev;
     res = cuDeviceGet(&cu_dev, 0);
     if(res != CUDA_SUCCESS) {
-        fprintf(stderr, "Unable to get CUDA device (result: %d)\n", res);
+        const char *err_str;
+        cuGetErrorString(res, &err_str);
+        fprintf(stderr, "Error: unable to get CUDA device, error: %s (result: %d)\n", err_str, res);
         return 1;
     }
 
     CUcontext cu_ctx;
     res = cuCtxCreate_v2(&cu_ctx, CU_CTX_SCHED_AUTO, cu_dev);
     if(res != CUDA_SUCCESS) {
-        fprintf(stderr, "Unable to create CUDA context (result: %d)\n", res);
+        const char *err_str;
+        cuGetErrorString(res, &err_str);
+        fprintf(stderr, "Error: unable to create CUDA context, error: %s (result: %d)\n", err_str, res);
         return 1;
     }
 
@@ -1124,7 +1109,7 @@ int main(int argc, char **argv) {
 
     AVBufferRef *device_ctx;
     CUgraphicsResource cuda_graphics_resource;
-    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource);
+    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx);
     if(video_stream)
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
@@ -1161,16 +1146,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    AVHWDeviceContext *hw_device_context =
-        (AVHWDeviceContext *)device_ctx->data;
-    AVCUDADeviceContext *cuda_device_context =
-        (AVCUDADeviceContext *)hw_device_context->hwctx;
-    CUcontext *cuda_context = &(cuda_device_context->cuda_ctx);
-    if (!cuda_context) {
-        fprintf(stderr, "Error: No cuda context\n");
-        exit(1);
-    }
-
     // av_frame_free(&rgb_frame);
     // avcodec_close(av_codec_context);
 
@@ -1195,7 +1170,7 @@ int main(int argc, char **argv) {
     CUarray mapped_array;
     if(src_window_id) {
         res = cuCtxPopCurrent(&old_ctx);
-        res = cuCtxPushCurrent(*cuda_context);
+        res = cuCtxPushCurrent(cu_ctx);
 
         // Get texture
         res = cuGraphicsResourceSetMapFlags(
@@ -1431,6 +1406,8 @@ int main(int argc, char **argv) {
                     // int err = glGetError();
                     // fprintf(stderr, "error: %d\n", err);
 
+                    // TODO: Remove this copy, which is only possible by using nvenc directly and encoding window_pixmap.target_texture_id
+
                     CUDA_MEMCPY2D memcpy_struct;
                     memcpy_struct.srcXInBytes = 0;
                     memcpy_struct.srcY = 0;
@@ -1449,11 +1426,11 @@ int main(int argc, char **argv) {
 
                     frame_captured = true;
                 } else {
-                    uint32_t byte_size;
-                    CUdeviceptr src_cu_device_ptr;
+                    // TODO: Check when src_cu_device_ptr changes and re-register resource
+                    uint32_t byte_size = 0;
+                    CUdeviceptr src_cu_device_ptr = 0;
                     frame_captured = nv_fbc_library.capture(&src_cu_device_ptr, &byte_size);
-                    if(frame_captured)
-                        cuMemcpyDtoD((CUdeviceptr)frame->data[0], src_cu_device_ptr, byte_size);
+                    frame->data[0] = (uint8_t*)src_cu_device_ptr;
                 }
                 // res = cuCtxPopCurrent(&old_ctx);
             }

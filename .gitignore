@@ -7,6 +7,5 @@ tests/compile_commands.json
 .clangd/
 .cache/
 
-main.o
-sound.o
+*.o
 gpu-screen-recorder
