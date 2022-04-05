@@ -441,29 +441,29 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     switch(video_quality) {
         case VideoQuality::MEDIUM:
 	        codec_context->bit_rate = 5000000 + (codec_context->width * codec_context->height) / 2;
-            codec_context->qmin = 17;
-            codec_context->qmax = 25;
+            codec_context->qmin = 30;
+            codec_context->qmax = 51;
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
-            av_opt_set(codec_context->priv_data, "preset", "p4", 0);
+            //av_opt_set(codec_context->priv_data, "preset", "p4", 0);
             break;
         case VideoQuality::HIGH:
-            codec_context->qmin = 12;
-            codec_context->qmax = 18;
+            codec_context->qmin = 20;
+            codec_context->qmax = 40;
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
-            av_opt_set(codec_context->priv_data, "preset", "p5", 0);
+            //av_opt_set(codec_context->priv_data, "preset", "p5", 0);
             break;
         case VideoQuality::ULTRA:
 	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
-            codec_context->qmin = 12;
-            codec_context->qmax = 18;
+            codec_context->qmin = 16;
+            codec_context->qmax = 30;
             //av_opt_set(codec_context->priv_data, "preset", "veryslow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
-            av_opt_set(codec_context->priv_data, "preset", "p7", 0);
+            //av_opt_set(codec_context->priv_data, "preset", "p7", 0);
             break;
     }
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
@@ -471,7 +471,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
 
     // stream->time_base = codec_context->time_base;
     // codec_context->ticks_per_frame = 30;
-    av_opt_set(codec_context->priv_data, "tune", "hq", 0);
+    //av_opt_set(codec_context->priv_data, "tune", "hq", 0);
     //av_opt_set(codec_context->priv_data, "rc", "vbr", 0);
 
     // Some formats want stream headers to be seperate
