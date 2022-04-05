@@ -62,7 +62,7 @@ public:
         if(!library || !display_to_capture || !display_width || !display_height || fbc_handle_created)
             return false;
 
-        const bool capture_region = (x > 0 && y > 0 && width > 0 && height > 0);
+        const bool capture_region = (x > 0 || y > 0 || width > 0 || height > 0);
 
         NVFBCSTATUS status;
         NVFBC_TRACKING_TYPE tracking_type;
@@ -130,7 +130,6 @@ public:
         }
         create_capture_params.eTrackingType = tracking_type;
         create_capture_params.dwSamplingRateMs = 1000 / fps;
-        // Cant use this, it breaks when a compositor is used
         create_capture_params.bAllowDirectCapture = direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
         create_capture_params.bPushModel = direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
         if(tracking_type == NVFBC_TRACKING_OUTPUT)

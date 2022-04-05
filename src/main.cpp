@@ -454,7 +454,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
-            av_opt_set(codec_context->priv_data, "preset", "p6", 0);
+            av_opt_set(codec_context->priv_data, "preset", "p5", 0);
             break;
         case VideoQuality::ULTRA:
 	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
@@ -472,6 +472,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     // stream->time_base = codec_context->time_base;
     // codec_context->ticks_per_frame = 30;
     av_opt_set(codec_context->priv_data, "tune", "hq", 0);
+    //av_opt_set(codec_context->priv_data, "rc", "vbr", 0);
 
     // Some formats want stream headers to be seperate
     if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
