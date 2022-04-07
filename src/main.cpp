@@ -423,7 +423,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->codec_id = codec->id;
     codec_context->width = record_width & ~1;
     codec_context->height = record_height & ~1;
-	codec_context->bit_rate = 7500000 + (codec_context->width * codec_context->height) / 2;
+	codec_context->bit_rate = 12500000 + (codec_context->width * codec_context->height) / 2;
     // Timebase: This is the fundamental unit of time (in seconds) in terms
     // of which frame timestamps are represented. For fixed-fps content,
     // timebase should be 1/framerate and timestamp increments should be
@@ -435,31 +435,46 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->sample_aspect_ratio.num = 0;
     codec_context->sample_aspect_ratio.den = 0;
     codec_context->gop_size = fps * 2;
-    codec_context->max_b_frames = use_hevc ? 0 : 2;
+    codec_context->max_b_frames = 0;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
     switch(video_quality) {
         case VideoQuality::MEDIUM:
-	        codec_context->bit_rate = 5000000 + (codec_context->width * codec_context->height) / 2;
-            codec_context->qmin = 30;
-            codec_context->qmax = 51;
+	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
+            if(use_hevc) {
+                codec_context->qmin = 20;
+                codec_context->qmax = 35;
+            } else {
+                codec_context->qmin = 5;
+                codec_context->qmax = 20;
+            }
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
             //av_opt_set(codec_context->priv_data, "preset", "p4", 0);
             break;
         case VideoQuality::HIGH:
-            codec_context->qmin = 20;
-            codec_context->qmax = 40;
+            if(use_hevc) {
+                codec_context->qmin = 17;
+                codec_context->qmax = 30;
+            } else {
+                codec_context->qmin = 5;
+                codec_context->qmax = 15;
+            }
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
             //av_opt_set(codec_context->priv_data, "preset", "p5", 0);
             break;
         case VideoQuality::ULTRA:
-	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
-            codec_context->qmin = 16;
-            codec_context->qmax = 30;
+	        codec_context->bit_rate = 15000000 + (codec_context->width * codec_context->height) / 2;
+            if(use_hevc) {
+                codec_context->qmin = 16;
+                codec_context->qmax = 25;
+            } else {
+                codec_context->qmin = 3;
+                codec_context->qmax = 13;
+            }
             //av_opt_set(codec_context->priv_data, "preset", "veryslow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
@@ -1095,7 +1110,8 @@ int main(int argc, char **argv) {
     av_format_context->flags |= AVFMT_FLAG_GENPTS;
     const AVOutputFormat *output_format = av_format_context->oformat;
 
-    bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
+    //bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
+    bool use_hevc = true;
     if(use_hevc && strcmp(container_format, "flv") == 0) {
         use_hevc = false;
         fprintf(stderr, "Warning: hevc is not compatible with flv, falling back to h264 instead.\n");

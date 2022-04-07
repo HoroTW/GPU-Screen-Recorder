@@ -12,9 +12,8 @@ NvFBC doesn't work with PRIME, so if you are using PRIME then you can't record t
 If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.
 
 # Performance
-When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however when using this screen recorder
-the fps remains at 30.
-
+When recording a 4k game, fps drops from 30 to 7 when using OBS Studio, however when using this screen recorder the fps remains at 30.\
+It is recommended to save the video to a SSD because of the large file size, which a slow HDD might not be fast enough to handle.
 # Installation
 If you are running an Arch Linux based distro, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
 If you are running an Ubuntu based distro then run `install_ubuntu.sh` as root: `sudo ./install_ubuntu.sh`.\
