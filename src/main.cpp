@@ -290,7 +290,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, pixmap.texture_width,
                  pixmap.texture_height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
     int err2 = glGetError();
-    fprintf(stderr, "error: %d\n", err2);
+    //fprintf(stderr, "error: %d\n", err2);
     // glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
     // glGenerateTextureMipmapEXT(glxpixmap, GL_TEXTURE_2D);
 
@@ -390,8 +390,8 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
 
     codec_context->time_base.num = 1;
     codec_context->time_base.den = AV_TIME_BASE;
-    codec_context->framerate.num = 1;
-    codec_context->framerate.den = fps;
+    codec_context->framerate.num = fps;
+    codec_context->framerate.den = 1;
 
     // Some formats want stream headers to be seperate
     if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
@@ -430,8 +430,8 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     // identical to 1
     codec_context->time_base.num = 1;
     codec_context->time_base.den = AV_TIME_BASE;
-    codec_context->framerate.num = 1;
-    codec_context->framerate.den = fps;
+    codec_context->framerate.num = fps;
+    codec_context->framerate.den = 1;
     codec_context->sample_aspect_ratio.num = 0;
     codec_context->sample_aspect_ratio.den = 0;
     codec_context->gop_size = fps * 2;
@@ -682,7 +682,7 @@ static AVStream* create_stream(AVFormatContext *av_format_context, AVCodecContex
     }
     stream->id = av_format_context->nb_streams - 1;
     stream->time_base = codec_context->time_base;
-    stream->avg_frame_rate = av_inv_q(codec_context->framerate);
+    stream->avg_frame_rate = codec_context->framerate;
     return stream;
 }
 
@@ -1391,7 +1391,7 @@ int main(int argc, char **argv) {
         double frame_timer_elapsed = time_now - frame_timer_start;
         double elapsed = time_now - start_time;
         if (elapsed >= 1.0) {
-            fprintf(stderr, "fps: %d\n", fps_counter);
+            fprintf(stderr, "update fps: %d\n", fps_counter);
             start_time = time_now;
             current_fps = fps_counter;
             fps_counter = 0;
