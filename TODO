@@ -5,3 +5,4 @@ Track window damages and only update then. That is better for output file size.
 Getting the texture of a window when using a compositor is an nvidia specific limitation. When gpu-screen-recorder supports other gpus then this can be ignored.
 Remove dependency on glfw (and glew?).
 Quickly changing workspace and back while recording under i3 breaks the screen recorder. i3 probably unmaps windows in other workspaces.
+Remove hw_get_frame as it creates a new cuda device ptr which we dont use!

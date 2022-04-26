@@ -69,7 +69,7 @@ static const int AUDIO_STREAM_INDEX = 1;
 static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
 
 static char* av_error_to_string(int err) {
-    if(av_strerror(err, av_error_buffer, sizeof(av_error_buffer) < 0))
+    if(av_strerror(err, av_error_buffer, sizeof(av_error_buffer)) < 0)
         strcpy(av_error_buffer, "Unknown error");
     return av_error_buffer;
 }
