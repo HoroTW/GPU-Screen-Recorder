@@ -608,7 +608,7 @@ static void usage() {
         "\"screen-direct\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Recording a display requires a gpu with NvFBC support.\n");
     fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. Usually you want to set this to the size of the window. Optional, by default the size of the window, monitor or screen is used (which is passed to -w).\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
-    fprintf(stderr, "  -f    Framerate to record at. Clamped to [1,250].\n");
+    fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Optional, disabled by default.\n");
     fprintf(stderr, "  -q    Video quality. Should either be 'medium', 'high' or 'ultra'. Optional, set to 'medium' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
@@ -884,8 +884,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Invalid fps argument: %s\n", args["-f"].value);
         return 1;
     }
-    if(fps > 250)
-        fps = 250;
+    if(fps < 1)
+        fps = 1;
 
     const char *quality_str = args["-q"].value;
     if(!quality_str)
@@ -1295,6 +1295,8 @@ int main(int argc, char **argv) {
     handle_new_pid_file(replay_buffer_size_secs == -1 ? "record" : "replay");
     started = 1;
 
+    const double update_fps = fps + 190;
+
     bool redraw = true;
     XEvent e;
     while (running) {
@@ -1477,7 +1479,7 @@ int main(int argc, char **argv) {
 
         // av_frame_free(&frame);
         double frame_end = glfwGetTime();
-        double frame_sleep_fps = 1.0 / 250.0;
+        double frame_sleep_fps = 1.0 / update_fps;
         double sleep_time = frame_sleep_fps - (frame_end - frame_start);
         if(sleep_time > 0.0)
             usleep(sleep_time * 1000.0 * 1000.0);
