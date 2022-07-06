@@ -606,7 +606,7 @@ static void usage() {
     fprintf(stderr, "OPTIONS:\n");
     fprintf(stderr, "  -w    Window to record or a display, \"screen\" or \"screen-direct\". The display is the display name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded and they are recorded in h265 (aka hevc)."
         "\"screen-direct\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Recording a display requires a gpu with NvFBC support.\n");
-    fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. Usually you want to set this to the size of the window. Optional, by default the size of the window, monitor or screen is used (which is passed to -w).\n");
+    fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. Usually you want to set this to the size of the window. Optional, by default the size of the window (which is passed to -w). This option is only supported when recording a window, not a screen/monitor.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Optional, disabled by default.\n");
@@ -949,6 +949,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    const char *record_area = args["-s"].value;
+
     uint32_t window_width = 0;
     uint32_t window_height = 0;
 
@@ -957,6 +959,11 @@ int main(int argc, char **argv) {
     const char *window_str = args["-w"].value;
     Window src_window_id = None;
     if(contains_non_hex_number(window_str)) {
+        if(record_area) {
+            fprintf(stderr, "Option -s is not supported when recording a monitor/screen\n");
+            usage();
+        }
+
         if(!nv_fbc_library.load())
             return 1;
 
@@ -978,7 +985,6 @@ int main(int argc, char **argv) {
 
     int record_width = window_width;
     int record_height = window_height;
-    const char *record_area = args["-s"].value;
     if(record_area) {
         if(sscanf(record_area, "%dx%d", &record_width, &record_height) != 2) {
             fprintf(stderr, "Invalid value for -s '%s', expected a value in format WxH\n", record_area);
