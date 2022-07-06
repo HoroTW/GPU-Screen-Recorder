@@ -1433,6 +1433,8 @@ int main(int argc, char **argv) {
 
                     // TODO: Remove this copy, which is only possible by using nvenc directly and encoding window_pixmap.target_texture_id
 
+                    frame->linesize[0] = frame->width * 4;
+
                     CUDA_MEMCPY2D memcpy_struct;
                     memcpy_struct.srcXInBytes = 0;
                     memcpy_struct.srcY = 0;
@@ -1452,6 +1454,8 @@ int main(int argc, char **argv) {
                     frame_captured = true;
                 } else {
                     // TODO: Check when src_cu_device_ptr changes and re-register resource
+                    frame->linesize[0] = frame->width * 4;
+
                     uint32_t byte_size = 0;
                     CUdeviceptr src_cu_device_ptr = 0;
                     frame_captured = nv_fbc_library.capture(&src_cu_device_ptr, &byte_size);
