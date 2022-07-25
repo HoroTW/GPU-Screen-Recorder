@@ -1173,7 +1173,7 @@ int main(int argc, char **argv) {
     // avcodec_close(av_codec_context);
 
     if(dpy)
-        XSelectInput(dpy, src_window_id, StructureNotifyMask | ExposureMask);
+        XSelectInput(dpy, src_window_id, StructureNotifyMask | VisibilityChangeMask);
 
     /*
     int damage_event;
@@ -1245,6 +1245,7 @@ int main(int argc, char **argv) {
     double record_start_time = glfwGetTime();
     std::deque<AVPacket> frame_data_queue;
     bool frames_erased = false;
+    int prev_visibility_state = VisibilityFullyObscured;
 
     SoundDevice sound_device;
     uint8_t *audio_frame_buf;
@@ -1318,9 +1319,12 @@ int main(int argc, char **argv) {
                 running = 0;
             }
 
-            if (XCheckTypedWindowEvent(dpy, src_window_id, Expose, &e) && e.xexpose.count == 0) {
-                window_resize_timer = glfwGetTime();
-                window_resized = true;
+            if (XCheckTypedWindowEvent(dpy, src_window_id, VisibilityNotify, &e)) {
+                if((prev_visibility_state == VisibilityFullyObscured && e.xvisibility.state != VisibilityFullyObscured) || (e.xvisibility.state == prev_visibility_state)) {
+                    window_resize_timer = glfwGetTime();
+                    window_resized = true;
+                }
+                prev_visibility_state = e.xvisibility.state;
             }
 
             if (XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e) && e.xconfigure.window == src_window_id) {
