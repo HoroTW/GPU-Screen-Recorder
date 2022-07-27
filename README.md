@@ -9,7 +9,8 @@ where only the last few seconds are saved.
 Might now work when using a compositor such as picom when using the glx backend. Using the xrender backend with picom fixes this issue.\
 Does not work when using gtk client side decorations (such as on Pop OS). Either disable those (if possible), install gtk-nocsd or record the whole monitor/screen if you have NvFBC.\
 For NvFBC to work with PRIME, you must set the primary GPU to your dedicated Nvidia graphics card. On Pop OS, you can select the 'NVIDIA Graphics' option in the power menu, or on Arch Linux you can use Optimus Manager.\
-If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.
+If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.\
+Videos are recorded with variable frame rate and as a result, the video can't be played with vlc or edited with kdenlive (and video editors that use the same libraries). This is a bug in vlc/kdenlive. The video works fine with mpv and youtube. This will be fixed in the future.
 
 # Performance
 When recording Legend of Zelda Breath of the Wild at 4k, fps drops from 30 to 7 when using OBS Studio + nvenc, however when using this screen recorder the fps remains at 30.\
