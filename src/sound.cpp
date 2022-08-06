@@ -19,6 +19,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 #ifdef PULSEAUDIO
 #include <pulse/simple.h>
@@ -31,13 +32,18 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
     ss.channels = num_channels;
     int error;
 
-    pa_simple *pa_handle = pa_simple_new(nullptr, "gpu-screen-recorder", PA_STREAM_RECORD, name, "record", &ss, nullptr, nullptr, &error);
+    pa_buffer_attr buffer_attr;
+    memset(&buffer_attr, -1, sizeof(buffer_attr));
+    buffer_attr.maxlength = period_frame_size * 2 * num_channels; // 2 bytes/sample, @num_channels channels
+    buffer_attr.fragsize = buffer_attr.maxlength;
+
+    pa_simple *pa_handle = pa_simple_new(nullptr, "gpu-screen-recorder", PA_STREAM_RECORD, name, "record", &ss, nullptr, &buffer_attr, &error);
     if(!pa_handle) {
         fprintf(stderr, "pa_simple_new() failed: %s. Audio input device %s might not be valid\n", pa_strerror(error), name);
         return -1;
     }
 
-    int buffer_size = period_frame_size * 2 * num_channels; // 2 bytes/sample, @num_channels channels
+    int buffer_size = buffer_attr.maxlength;
     void *buffer = malloc(buffer_size);
     if(!buffer) {
         fprintf(stderr, "failed to allocate buffer for audio\n");
