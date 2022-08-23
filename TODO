@@ -8,3 +8,4 @@ Quickly changing workspace and back while recording under i3 breaks the screen r
 Remove hw_get_frame as it creates a new cuda device ptr which we dont use!
 Nvidia 515.57 supports nvfbc direct capture with mouse capture. Check if driver is equal or newer than this and use mouse capture in such situations (with direct capture) supports nvfbc direct capture with mouse capture.
 See https://trac.ffmpeg.org/wiki/EncodingForStreamingSites for optimizing streaming.
+Add -ma option to merge all audio tracks into one (muxing?).

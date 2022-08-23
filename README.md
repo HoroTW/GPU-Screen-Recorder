@@ -45,7 +45,6 @@ FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to
 * Support AMD and Intel, using VAAPI. cuda and vaapi should be loaded at runtime using dlopen instead of linking to those
 libraries at compile-time.
 * Clean up the code!
-* Fix segfault in debug mode (happens because audio codec becomes NULL?)
 * Dynamically change bitrate/resolution to match desired fps. This would be helpful when streaming for example, where the encode output speed also depends on upload speed to the streaming service.
 * Show cursor when recording. Currently the cursor is not visible when recording a window and it's disabled when recording screen-direct to allow direct nvfbc capture for fullscreen windows, which allows for better performance and variable refresh rate monitors to work.
 * Implement opengl injection to capture texture. This fixes composition issues and (VRR) without having to use NvFBC direct capture.

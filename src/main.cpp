@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <thread>
 #include <mutex>
 #include <map>
@@ -64,7 +65,6 @@ extern "C" {
 //#include <CL/cl.h>
 
 static const int VIDEO_STREAM_INDEX = 0;
-static const int AUDIO_STREAM_INDEX = 1;
 
 static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
 
@@ -385,8 +385,7 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
     codec_context->sample_fmt = AV_SAMPLE_FMT_FLTP;
     //codec_context->bit_rate = 64000;
     codec_context->sample_rate = 48000;
-    codec_context->channel_layout = AV_CH_LAYOUT_STEREO;
-    codec_context->channels = 2;
+    av_channel_layout_default(&codec_context->ch_layout, 2);
 
     codec_context->time_base.num = 1;
     codec_context->time_base.den = AV_TIME_BASE;
@@ -512,8 +511,7 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
 
     frame->nb_samples = audio_codec_context->frame_size;
     frame->format = audio_codec_context->sample_fmt;
-	frame->channels = audio_codec_context->channels;
-    frame->channel_layout = audio_codec_context->channel_layout;
+    av_channel_layout_copy(&frame->ch_layout, &audio_codec_context->ch_layout);
 
     ret = av_frame_get_buffer(frame, 0);
     if(ret < 0) {
@@ -602,14 +600,14 @@ static void close_video(AVStream *video_stream, AVFrame *frame) {
 }
 
 static void usage() {
-    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
+    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>...] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
     fprintf(stderr, "OPTIONS:\n");
     fprintf(stderr, "  -w    Window to record or a display, \"screen\" or \"screen-direct\". The display is the display name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded and they are recorded in h265 (aka hevc)."
         "\"screen-direct\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Recording a display requires a gpu with NvFBC support.\n");
     fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. Usually you want to set this to the size of the window. Optional, by default the size of the window (which is passed to -w). This option is only supported when recording a window, not a screen/monitor.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
-    fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Optional, disabled by default.\n");
+    fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. Optional, disabled by default.\n");
     fprintf(stderr, "  -q    Video quality. Should either be 'medium', 'high' or 'ultra'. Optional, set to 'medium' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
@@ -641,8 +639,15 @@ static void save_replay_handler(int) {
 }
 
 struct Arg {
-    const char *value;
-    bool optional;
+    std::vector<const char*> values;
+    bool optional = false;
+    bool list = false;
+
+    const char* value() const {
+        if(values.empty())
+            return nullptr;
+        return values.front();
+    }
 };
 
 static bool is_hex_num(char c) {
@@ -686,11 +691,23 @@ static AVStream* create_stream(AVFormatContext *av_format_context, AVCodecContex
     return stream;
 }
 
+struct AudioTrack {
+    AVCodecContext *codec_context = nullptr;
+    AVFrame *frame = nullptr;
+    AVStream *stream = nullptr;
+    const char *input_name = nullptr;
+
+    SoundDevice sound_device;
+    std::thread thread; // TODO: Instead of having a thread for each track, have one thread for all threads and read the data with non-blocking read
+
+    int stream_index = 0;
+};
+
 static std::future<void> save_replay_thread;
 static std::vector<AVPacket> save_replay_packets;
 static std::string save_replay_output_filepath;
 
-static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContext *audio_codec_context, int video_stream_index, int audio_stream_index, const std::deque<AVPacket> &frame_data_queue, bool frames_erased, std::string output_dir, std::string container_format) {
+static void save_replay_async(AVCodecContext *video_codec_context, int video_stream_index, std::vector<AudioTrack> &audio_tracks, const std::deque<AVPacket> &frame_data_queue, bool frames_erased, std::string output_dir, std::string container_format) {
     if(save_replay_thread.valid())
         return;
     
@@ -716,7 +733,7 @@ static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContex
     }
 
     save_replay_output_filepath = output_dir + "/Replay_" + get_date_str() + "." + container_format;
-    save_replay_thread = std::async(std::launch::async, [video_stream_index, container_format, start_index, pts_offset, video_codec_context, audio_codec_context]() mutable {
+    save_replay_thread = std::async(std::launch::async, [video_stream_index, container_format, start_index, pts_offset, video_codec_context, &audio_tracks]() mutable {
         AVFormatContext *av_format_context;
         // The output format is automatically guessed from the file extension
         avformat_alloc_output_context2(&av_format_context, nullptr, container_format.c_str(), nullptr);
@@ -726,11 +743,15 @@ static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContex
             av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
         AVStream *video_stream = create_stream(av_format_context, video_codec_context);
-        AVStream *audio_stream = audio_codec_context ? create_stream(av_format_context, audio_codec_context) : nullptr;
-
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
-        if(audio_stream)
-            avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
+
+        std::unordered_map<int, AudioTrack*> stream_index_to_audio_track_map;
+        for(AudioTrack &audio_track : audio_tracks) {
+            stream_index_to_audio_track_map[audio_track.stream_index] = &audio_track;
+            AVStream *audio_stream = create_stream(av_format_context, audio_track.codec_context);
+            avcodec_parameters_from_context(audio_stream->codecpar, audio_track.codec_context);
+            audio_track.stream = audio_stream;
+        }
 
         int ret = avio_open(&av_format_context->pb, save_replay_output_filepath.c_str(), AVIO_FLAG_WRITE);
         if (ret < 0) {
@@ -747,8 +768,14 @@ static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContex
         for(size_t i = start_index; i < save_replay_packets.size(); ++i) {
             AVPacket &av_packet = save_replay_packets[i];
 
-            AVStream *stream = av_packet.stream_index == video_stream_index ? video_stream : audio_stream;
-            AVCodecContext *codec_context = av_packet.stream_index == video_stream_index ? video_codec_context : audio_codec_context;
+            AVStream *stream = video_stream;
+            AVCodecContext *codec_context = video_codec_context;
+
+            if(av_packet.stream_index != video_stream_index) {
+                AudioTrack *audio_track = stream_index_to_audio_track_map[av_packet.stream_index];
+                stream = audio_track->stream;
+                codec_context = audio_track->codec_context;
+            }
 
             av_packet.stream_index = stream->index;
             av_packet.pts -= pts_offset;
@@ -765,6 +792,10 @@ static void save_replay_async(AVCodecContext *video_codec_context, AVCodecContex
 
         avio_close(av_format_context->pb);
         avformat_free_context(av_format_context);
+
+        for(AudioTrack &audio_track : audio_tracks) {
+            audio_track.stream = nullptr;
+        }
     });
 }
 
@@ -833,15 +864,15 @@ int main(int argc, char **argv) {
     handle_existing_pid_file();
 
     std::map<std::string, Arg> args = {
-        { "-w", Arg { nullptr, false } },
+        { "-w", Arg { {}, false, false } },
         //{ "-s", Arg { nullptr, true } },
-        { "-c", Arg { nullptr, false } },
-        { "-f", Arg { nullptr, false } },
-        { "-s", Arg { nullptr, true } },
-        { "-a", Arg { nullptr, true } },
-        { "-q", Arg { nullptr, true } },
-        { "-o", Arg { nullptr, true } },
-        { "-r", Arg { nullptr, true } }
+        { "-c", Arg { {}, false, false } },
+        { "-f", Arg { {}, false, false } },
+        { "-s", Arg { {}, true, false } },
+        { "-a", Arg { {}, true, true } },
+        { "-q", Arg { {}, true, false } },
+        { "-o", Arg { {}, true, false } },
+        { "-r", Arg { {}, true, false } }
     };
 
     for(int i = 1; i < argc - 1; i += 2) {
@@ -850,11 +881,17 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Invalid argument '%s'\n", argv[i]);
             usage();
         }
-        it->second.value = argv[i + 1];
+
+        if(!it->second.values.empty() && !it->second.list) {
+            fprintf(stderr, "Expected argument '%s' to only be specified once\n", argv[i]);
+            usage();
+        }
+
+        it->second.values.push_back(argv[i + 1]);
     }
 
     for(auto &it : args) {
-        if(!it.second.optional && !it.second.value) {
+        if(!it.second.optional && !it.second.value()) {
             fprintf(stderr, "Missing argument '%s'\n", it.first.c_str());
             usage();
         }
@@ -869,7 +906,7 @@ int main(int argc, char **argv) {
 
     /*
     TODO: Fix this. Doesn't work for some reason
-    const char *screen_region = args["-s"].value;
+    const char *screen_region = args["-s"].value();
     if(screen_region) {
         if(sscanf(screen_region, "%ux%u+%u+%u", &region_x, &region_y, &region_width, &region_height) != 4) {
             fprintf(stderr, "Invalid value for -s '%s', expected a value in format WxH+X+Y\n", screen_region);
@@ -878,16 +915,16 @@ int main(int argc, char **argv) {
     }
     */
 
-    const char *container_format = args["-c"].value;
-    int fps = atoi(args["-f"].value);
+    const char *container_format = args["-c"].value();
+    int fps = atoi(args["-f"].value());
     if(fps == 0) {
-        fprintf(stderr, "Invalid fps argument: %s\n", args["-f"].value);
+        fprintf(stderr, "Invalid fps argument: %s\n", args["-f"].value());
         return 1;
     }
     if(fps < 1)
         fps = 1;
 
-    const char *quality_str = args["-q"].value;
+    const char *quality_str = args["-q"].value();
     if(!quality_str)
         quality_str = "medium";
 
@@ -904,7 +941,7 @@ int main(int argc, char **argv) {
     }
 
     int replay_buffer_size_secs = -1;
-    const char *replay_buffer_size_secs_str = args["-r"].value;
+    const char *replay_buffer_size_secs_str = args["-r"].value();
     if(replay_buffer_size_secs_str) {
         replay_buffer_size_secs = atoi(replay_buffer_size_secs_str);
         if(replay_buffer_size_secs < 5 || replay_buffer_size_secs > 1200) {
@@ -949,14 +986,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    const char *record_area = args["-s"].value;
+    const char *record_area = args["-s"].value();
 
     uint32_t window_width = 0;
     uint32_t window_height = 0;
 
     NvFBCLibrary nv_fbc_library;
 
-    const char *window_str = args["-w"].value;
+    const char *window_str = args["-w"].value();
     Window src_window_id = None;
     if(contains_non_hex_number(window_str)) {
         if(record_area) {
@@ -992,7 +1029,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    const char *filename = args["-o"].value;
+    const char *filename = args["-o"].value();
     if(filename) {
         if(replay_buffer_size_secs != -1) {
             struct stat buf;
@@ -1124,7 +1161,7 @@ int main(int argc, char **argv) {
     }
 
     AVStream *video_stream = nullptr;
-    AVStream *audio_stream = nullptr;
+    std::vector<AudioTrack> audio_tracks;
 
     AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, record_width, record_height, fps, use_hevc);
     if(replay_buffer_size_secs == -1)
@@ -1136,16 +1173,26 @@ int main(int argc, char **argv) {
     if(video_stream)
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
-    AVCodecContext *audio_codec_context = nullptr;
-    AVFrame *audio_frame = nullptr;
-    if(audio_input_arg.value) {
-        audio_codec_context = create_audio_codec_context(av_format_context, fps);
+    int audio_stream_index = VIDEO_STREAM_INDEX + 1;
+    for(const char *audio_input : audio_input_arg.values) {
+        AVCodecContext *audio_codec_context = create_audio_codec_context(av_format_context, fps);
+
+        AVStream *audio_stream = nullptr;
         if(replay_buffer_size_secs == -1)
             audio_stream = create_stream(av_format_context, audio_codec_context);
 
-        audio_frame = open_audio(audio_codec_context);
+        AVFrame *audio_frame = open_audio(audio_codec_context);
         if(audio_stream)
             avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
+
+        audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, audio_input, {}, {}, audio_stream_index });
+
+        if(sound_device_get_by_name(&audio_tracks.back().sound_device, audio_tracks.back().input_name, audio_codec_context->ch_layout.nb_channels, audio_codec_context->frame_size) != 0) {
+            fprintf(stderr, "failed to get 'pulse' sound device\n");
+            exit(1);
+        }
+
+        ++audio_stream_index;
     }
 
     //av_dump_format(av_format_context, 0, filename, 1);
@@ -1240,62 +1287,55 @@ int main(int argc, char **argv) {
         frame->height = record_height & ~1;
 
     std::mutex write_output_mutex;
-    std::thread audio_thread;
 
     double record_start_time = glfwGetTime();
     std::deque<AVPacket> frame_data_queue;
     bool frames_erased = false;
 
-    SoundDevice sound_device;
-    uint8_t *audio_frame_buf;
-    if(audio_input_arg.value) {
-        if(sound_device_get_by_name(&sound_device, audio_input_arg.value, audio_codec_context->channels, audio_codec_context->frame_size) != 0) {
-            fprintf(stderr, "failed to get 'pulse' sound device\n");
-            exit(1);
-        }
-
-        int audio_buffer_size = av_samples_get_buffer_size(NULL, audio_codec_context->channels, audio_codec_context->frame_size, audio_codec_context->sample_fmt, 1);
-        audio_frame_buf = (uint8_t *)av_malloc(audio_buffer_size);
-        avcodec_fill_audio_frame(audio_frame, audio_codec_context->channels, audio_codec_context->sample_fmt, (const uint8_t*)audio_frame_buf, audio_buffer_size, 1);
-
-        audio_thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, audio_codec_context, start_time_pts, fps](AVFormatContext *av_format_context, AVStream *audio_stream, uint8_t *audio_frame_buf, SoundDevice *sound_device, AVFrame *audio_frame, std::mutex *write_output_mutex) mutable {
-            
+    for(AudioTrack &audio_track : audio_tracks) {
+        audio_track.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, start_time_pts, &audio_track](AVFormatContext *av_format_context, std::mutex *write_output_mutex) mutable {
             SwrContext *swr = swr_alloc();
             if(!swr) {
                 fprintf(stderr, "Failed to create SwrContext\n");
                 exit(1);
             }
-            av_opt_set_int(swr, "in_channel_layout", audio_codec_context->channel_layout, 0);
-            av_opt_set_int(swr, "out_channel_layout", audio_codec_context->channel_layout, 0);
-            av_opt_set_int(swr, "in_sample_rate", audio_codec_context->sample_rate, 0);
-            av_opt_set_int(swr, "out_sample_rate", audio_codec_context->sample_rate, 0);
+            av_opt_set_int(swr, "in_channel_layout", AV_CH_LAYOUT_STEREO, 0);
+            av_opt_set_int(swr, "out_channel_layout", AV_CH_LAYOUT_STEREO, 0);
+            av_opt_set_int(swr, "in_sample_rate", audio_track.codec_context->sample_rate, 0);
+            av_opt_set_int(swr, "out_sample_rate", audio_track.codec_context->sample_rate, 0);
             av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_S16, 0);
             av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
             swr_init(swr);
 
             while(running) {
                 void *sound_buffer;
-                int sound_buffer_size = sound_device_read_next_chunk(sound_device, &sound_buffer);
+                int sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
                 if(sound_buffer_size >= 0) {
-                    // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
-                    swr_convert(swr, &audio_frame_buf, audio_frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
-                    audio_frame->extended_data = &audio_frame_buf;
-                    audio_frame->pts = (clock_get_monotonic_seconds() - start_time_pts) * AV_TIME_BASE;
+                    int ret = av_frame_make_writable(audio_track.frame);
+                    if (ret < 0) {
+                        fprintf(stderr, "Failed to make audio frame writable\n");
+                        break;
+                    }
 
-                    int ret = avcodec_send_frame(audio_codec_context, audio_frame);
+                    // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
+                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
+                    audio_track.frame->pts = (clock_get_monotonic_seconds() - start_time_pts) * AV_TIME_BASE;
+
+                    ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
                     if(ret < 0){
                         fprintf(stderr, "Failed to encode!\n");
                         break;
                     }
+
                     if(ret >= 0)
-                        receive_frames(audio_codec_context, AUDIO_STREAM_INDEX, audio_stream, audio_frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
+                        receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
                 } else {
                     fprintf(stderr, "failed to read sound from device, error: %d\n", sound_buffer_size);
                 }
             }
 
             swr_free(&swr);
-        }, av_format_context, audio_stream, audio_frame_buf, &sound_device, audio_frame, &write_output_mutex);
+        }, av_format_context, &write_output_mutex);
     }
 
     handle_new_pid_file(replay_buffer_size_secs == -1 ? "record" : "replay");
@@ -1484,7 +1524,7 @@ int main(int argc, char **argv) {
 
         if(save_replay == 1 && !save_replay_thread.valid() && replay_buffer_size_secs != -1) {
             save_replay = 0;
-            save_replay_async(video_codec_context, audio_codec_context, VIDEO_STREAM_INDEX, AUDIO_STREAM_INDEX, frame_data_queue, frames_erased, filename, container_format);
+            save_replay_async(video_codec_context, VIDEO_STREAM_INDEX, audio_tracks, frame_data_queue, frames_erased, filename, container_format);
         }
 
         // av_frame_free(&frame);
@@ -1500,9 +1540,9 @@ int main(int argc, char **argv) {
     if(save_replay_thread.valid())
         save_replay_thread.get();
 
-    if(audio_input_arg.value) {
-        audio_thread.join();
-        sound_device_close(&sound_device);
+    for(AudioTrack &audio_track : audio_tracks) {
+        audio_track.thread.join();
+        sound_device_close(&audio_track.sound_device);
     }
 
     if (replay_buffer_size_secs == -1 && av_write_trailer(av_format_context) != 0) {
