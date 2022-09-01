@@ -61,6 +61,7 @@ extern "C" {
 
 #include <deque>
 #include <future>
+#include <condition_variable>
 
 //#include <CL/cl.h>
 
@@ -385,6 +386,7 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
     codec_context->sample_fmt = AV_SAMPLE_FMT_FLTP;
     //codec_context->bit_rate = 64000;
     codec_context->sample_rate = 48000;
+    codec_context->profile = FF_PROFILE_AAC_LOW;
     av_channel_layout_default(&codec_context->ch_layout, 2);
 
     codec_context->time_base.num = 1;
@@ -428,7 +430,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     // timebase should be 1/framerate and timestamp increments should be
     // identical to 1
     codec_context->time_base.num = 1;
-    codec_context->time_base.den = AV_TIME_BASE;
+    codec_context->time_base.den = fps;
     codec_context->framerate.num = fps;
     codec_context->framerate.den = 1;
     codec_context->sample_aspect_ratio.num = 0;
@@ -607,7 +609,7 @@ static void usage() {
     fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. Usually you want to set this to the size of the window. Optional, by default the size of the window (which is passed to -w). This option is only supported when recording a window, not a screen/monitor.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
-    fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. Optional, disabled by default.\n");
+    fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. Optional, no audio track is added by default.\n");
     fprintf(stderr, "  -q    Video quality. Should either be 'medium', 'high' or 'ultra'. Optional, set to 'medium' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
@@ -1292,8 +1294,18 @@ int main(int argc, char **argv) {
     std::deque<AVPacket> frame_data_queue;
     bool frames_erased = false;
 
+    double prev_video_frame_time = clock_get_monotonic_seconds();
+
+    const size_t audio_buffer_size = 1024 * 2 * 2;
+    uint8_t *empty_audio = (uint8_t*)malloc(audio_buffer_size); // see sound.cpp
+    if(!empty_audio) {
+        fprintf(stderr, "Error: failed to create empty audio\n");
+        exit(1);
+    }
+    memset(empty_audio, 0, audio_buffer_size);
+
     for(AudioTrack &audio_track : audio_tracks) {
-        audio_track.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, start_time_pts, &audio_track](AVFormatContext *av_format_context, std::mutex *write_output_mutex) mutable {
+        audio_track.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, start_time_pts, &audio_track, empty_audio](AVFormatContext *av_format_context, std::mutex *write_output_mutex) mutable {
             SwrContext *swr = swr_alloc();
             if(!swr) {
                 fprintf(stderr, "Failed to create SwrContext\n");
@@ -1307,31 +1319,72 @@ int main(int argc, char **argv) {
             av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
             swr_init(swr);
 
-            while(running) {
-                void *sound_buffer;
-                int sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
-                if(sound_buffer_size >= 0) {
-                    int ret = av_frame_make_writable(audio_track.frame);
-                    if (ret < 0) {
-                        fprintf(stderr, "Failed to make audio frame writable\n");
-                        break;
+            std::deque<uint8_t*> buffered_audio;
+            std::mutex buffered_audio_mutex;
+            std::condition_variable buffered_audio_cv;
+
+            // TODO: Make the sound device read async instead of using a thread
+            std::thread sound_read_thread([&](){
+                while(running) {
+                    void *sound_buffer;
+                    int sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
+                    if(sound_buffer_size >= 0) {
+                        uint8_t *data = (uint8_t*)malloc(audio_track.sound_device.buffer_size);
+                        if(data) {
+                            memcpy(data, sound_buffer, audio_track.sound_device.buffer_size);
+                            std::unique_lock<std::mutex> lock(buffered_audio_mutex);
+                            buffered_audio.push_back(data);
+                            buffered_audio_cv.notify_one();
+                        }
                     }
-
-                    // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
-                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, sound_buffer_size);
-                    audio_track.frame->pts = (clock_get_monotonic_seconds() - start_time_pts) * AV_TIME_BASE;
-
-                    ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
-                    if(ret < 0){
-                        fprintf(stderr, "Failed to encode!\n");
-                        break;
-                    }
-
-                    if(ret >= 0)
-                        receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
-                } else {
-                    fprintf(stderr, "failed to read sound from device, error: %d\n", sound_buffer_size);
                 }
+            });
+
+            while(running) {
+                uint8_t *audio_buffer;
+                bool free_audio;
+                {
+                    // TODO: Not a good solution to lack of audio as it causes dropped frames, but it's better then complete audio desync
+                    std::unique_lock<std::mutex> lock(buffered_audio_mutex);
+                    buffered_audio_cv.wait_for(lock, std::chrono::milliseconds(30), [&]{ return !running || !buffered_audio.empty(); });
+                    if(!running)
+                        break;
+
+                    if(buffered_audio.empty()) {
+                        audio_buffer = empty_audio;
+                        free_audio = false;
+                    } else {
+                        audio_buffer = buffered_audio.front();
+                        buffered_audio.pop_front();
+                        free_audio = true;
+                    }
+                }
+
+                int ret = av_frame_make_writable(audio_track.frame);
+                if (ret < 0) {
+                    fprintf(stderr, "Failed to make audio frame writable\n");
+                    break;
+                }
+
+                // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
+                swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&audio_buffer, audio_track.sound_device.frames);
+                audio_track.frame->pts = (clock_get_monotonic_seconds() - start_time_pts) * AV_TIME_BASE;
+
+                ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
+                if(ret >= 0){
+                    receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
+                } else {
+                    fprintf(stderr, "Failed to encode audio!\n");
+                }
+
+                if(free_audio)
+                    free(audio_buffer);
+            }
+
+            sound_read_thread.join();
+            while(!buffered_audio.empty()) {
+                free(buffered_audio.front());
+                buffered_audio.pop_front();
             }
 
             swr_free(&swr);
@@ -1342,6 +1395,7 @@ int main(int argc, char **argv) {
     started = 1;
 
     const double update_fps = fps + 190;
+    int64_t video_pts_counter = 0;
 
     bool redraw = true;
     XEvent e;
@@ -1504,13 +1558,20 @@ int main(int argc, char **argv) {
                 // res = cuCtxPopCurrent(&old_ctx);
             }
 
-            frame->pts = (clock_get_monotonic_seconds() - start_time_pts) * AV_TIME_BASE;
-            if (avcodec_send_frame(video_codec_context, frame) >= 0) {
-                receive_frames(video_codec_context, VIDEO_STREAM_INDEX, video_stream, frame, av_format_context,
-                               record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
-            } else {
-                fprintf(stderr, "Error: avcodec_send_frame failed\n");
+            // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
+            const double this_video_frame_time = clock_get_monotonic_seconds();
+            const int num_frames = std::max(1.0, std::round((this_video_frame_time - prev_video_frame_time) / target_fps));
+            for(int i = 0; i < num_frames; ++i) {
+                frame->pts = video_pts_counter + i;
+                if (avcodec_send_frame(video_codec_context, frame) >= 0) {
+                    receive_frames(video_codec_context, VIDEO_STREAM_INDEX, video_stream, frame, av_format_context,
+                                record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
+                } else {
+                    fprintf(stderr, "Error: avcodec_send_frame failed\n");
+                }
             }
+            prev_video_frame_time = this_video_frame_time;
+            video_pts_counter += num_frames;
         }
 
         if(save_replay_thread.valid() && save_replay_thread.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -1558,4 +1619,5 @@ int main(int argc, char **argv) {
     }
 
     unlink(pid_file);
+    free(empty_audio);
 }

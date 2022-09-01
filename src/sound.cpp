@@ -33,7 +33,9 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
     int error;
 
     pa_buffer_attr buffer_attr;
-    memset(&buffer_attr, -1, sizeof(buffer_attr));
+    buffer_attr.tlength = -1;
+    buffer_attr.prebuf = -1;
+    buffer_attr.minreq = -1;
     buffer_attr.maxlength = period_frame_size * 2 * num_channels; // 2 bytes/sample, @num_channels channels
     buffer_attr.fragsize = buffer_attr.maxlength;
 
@@ -66,7 +68,7 @@ void sound_device_close(SoundDevice *device) {
 }
 
 int sound_device_read_next_chunk(SoundDevice *device, void **buffer) {
-    int error;
+    int error = 0;
     if(pa_simple_read((pa_simple*)device->handle, device->buffer, device->buffer_size, &error) < 0) {
         fprintf(stderr, "pa_simple_read() failed: %s\n", pa_strerror(error));
         return -1;

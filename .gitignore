@@ -9,3 +9,6 @@ tests/compile_commands.json
 
 *.o
 gpu-screen-recorder
+
+*.mp4
+*.flv
