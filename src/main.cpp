@@ -1322,6 +1322,7 @@ int main(int argc, char **argv) {
             std::deque<uint8_t*> buffered_audio;
             std::mutex buffered_audio_mutex;
             std::condition_variable buffered_audio_cv;
+            bool got_first_batch = false;
 
             // TODO: Make the sound device read async instead of using a thread
             std::thread sound_read_thread([&](){
@@ -1344,9 +1345,13 @@ int main(int argc, char **argv) {
                 uint8_t *audio_buffer;
                 bool free_audio;
                 {
-                    // TODO: Not a good solution to lack of audio as it causes dropped frames, but it's better then complete audio desync
+                    // TODO: Not a good solution to lack of audio as it causes dropped frames, but it's better then complete audio desync.
+                    // The first packet is delayed for some reason...
                     std::unique_lock<std::mutex> lock(buffered_audio_mutex);
-                    buffered_audio_cv.wait_for(lock, std::chrono::milliseconds(30), [&]{ return !running || !buffered_audio.empty(); });
+                    if(got_first_batch)
+                        buffered_audio_cv.wait(lock, [&]{ return !running || !buffered_audio.empty(); });
+                    else
+                        buffered_audio_cv.wait_for(lock, std::chrono::milliseconds(21), [&]{ return !running || !buffered_audio.empty(); });
                     if(!running)
                         break;
 
@@ -1357,6 +1362,7 @@ int main(int argc, char **argv) {
                         audio_buffer = buffered_audio.front();
                         buffered_audio.pop_front();
                         free_audio = true;
+                        got_first_batch = true;
                     }
                 }
 

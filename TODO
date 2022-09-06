@@ -11,3 +11,4 @@ See https://trac.ffmpeg.org/wiki/EncodingForStreamingSites for optimizing stream
 Add -ma option to merge all audio tracks into one (muxing?).
 Look at VK_EXT_external_memory_dma_buf.
 Allow setting a different output resolution than the input resolution.
+Use mov+faststart.
