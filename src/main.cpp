@@ -65,6 +65,8 @@ extern "C" {
 
 //#include <CL/cl.h>
 
+// TODO: Remove LIBAVUTIL_VERSION_MAJOR checks in the future when ubuntu, pop os LTS etc update ffmpeg to >= 5.0
+
 static const int VIDEO_STREAM_INDEX = 0;
 
 static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
@@ -387,7 +389,12 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
     //codec_context->bit_rate = 64000;
     codec_context->sample_rate = 48000;
     codec_context->profile = FF_PROFILE_AAC_LOW;
+#if LIBAVUTIL_VERSION_MAJOR < 54
+    codec_context->channel_layout = AV_CH_LAYOUT_STEREO;
+    codec_context->channels = 2;
+#else
     av_channel_layout_default(&codec_context->ch_layout, 2);
+#endif
 
     codec_context->time_base.num = 1;
     codec_context->time_base.den = AV_TIME_BASE;
@@ -513,7 +520,12 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
 
     frame->nb_samples = audio_codec_context->frame_size;
     frame->format = audio_codec_context->sample_fmt;
+#if LIBAVUTIL_VERSION_MAJOR < 54
+    frame->channels = audio_codec_context->channels;
+    frame->channel_layout = audio_codec_context->channel_layout;
+#else
     av_channel_layout_copy(&frame->ch_layout, &audio_codec_context->ch_layout);
+#endif
 
     ret = av_frame_get_buffer(frame, 0);
     if(ret < 0) {
@@ -1189,7 +1201,13 @@ int main(int argc, char **argv) {
 
         audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, audio_input, {}, {}, audio_stream_index });
 
-        if(sound_device_get_by_name(&audio_tracks.back().sound_device, audio_tracks.back().input_name, audio_codec_context->ch_layout.nb_channels, audio_codec_context->frame_size) != 0) {
+#if LIBAVUTIL_VERSION_MAJOR < 54
+        const int num_channels = audio_codec_context->channels;
+#else
+        const int num_channels = audio_codec_context->ch_layout.nb_channels;
+#endif
+
+        if(sound_device_get_by_name(&audio_tracks.back().sound_device, audio_tracks.back().input_name, num_channels, audio_codec_context->frame_size) != 0) {
             fprintf(stderr, "failed to get 'pulse' sound device\n");
             exit(1);
         }
