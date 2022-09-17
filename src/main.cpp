@@ -1582,9 +1582,11 @@ int main(int argc, char **argv) {
                 // res = cuCtxPopCurrent(&old_ctx);
             }
 
-            // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
             const double this_video_frame_time = clock_get_monotonic_seconds();
-            const int num_frames = std::max(1.0, std::round((this_video_frame_time - prev_video_frame_time) / target_fps));
+            const int64_t expected_frames = (this_video_frame_time - start_time_pts) / target_fps;
+
+            const int num_frames = std::max(0L, expected_frames - video_pts_counter);
+            // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
             for(int i = 0; i < num_frames; ++i) {
                 frame->pts = video_pts_counter + i;
                 if (avcodec_send_frame(video_codec_context, frame) >= 0) {
