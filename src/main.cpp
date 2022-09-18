@@ -39,6 +39,7 @@
 #include <GLFW/glfw3.h>
 
 #include <X11/extensions/Xcomposite.h>
+//#include <X11/Xatom.h>
 
 extern "C" {
 #include <libavutil/pixfmt.h>
@@ -87,17 +88,18 @@ struct ScopedGLXFBConfig {
 };
 
 struct WindowPixmap {
-    WindowPixmap()
-        : pixmap(None), glx_pixmap(None), texture_id(0), target_texture_id(0),
-          texture_width(0), texture_height(0) {}
+    Pixmap pixmap = None;
+    GLXPixmap glx_pixmap = None;
+    GLuint texture_id = 0;
+    GLuint target_texture_id = 0;
 
-    Pixmap pixmap;
-    GLXPixmap glx_pixmap;
-    GLuint texture_id;
-    GLuint target_texture_id;
+    GLint texture_width = 0;
+    GLint texture_height = 0;
 
-    GLint texture_width;
-    GLint texture_height;
+    GLint texture_real_width = 0;
+    GLint texture_real_height = 0;
+
+    Window composite_window = None;
 };
 
 enum class VideoQuality {
@@ -153,6 +155,53 @@ static int x11_io_error_handler(Display *dpy) {
     return 0;
 }
 
+static Window get_compositor_window(Display *display) {
+    Window overlay_window = XCompositeGetOverlayWindow(display, DefaultRootWindow(display));
+    XCompositeReleaseOverlayWindow(display, DefaultRootWindow(display));
+
+    /*
+    Atom xdnd_proxy = XInternAtom(display, "XdndProxy", False);
+    if(!xdnd_proxy)
+        return None;
+
+    Atom type = None;
+    int format = 0;
+    unsigned long nitems = 0, after = 0;
+    unsigned char *data = nullptr;
+    if(XGetWindowProperty(display, overlay_window, xdnd_proxy, 0, 1, False, XA_WINDOW, &type, &format, &nitems, &after, &data) != Success)
+        return None;
+
+    fprintf(stderr, "type: %ld, format: %d, num items: %lu\n", type, format, nitems);
+    if(type == XA_WINDOW && format == 32 && nitems == 1)
+        fprintf(stderr, "Proxy window: %ld\n", *(Window*)data);
+
+    if(data)
+        XFree(data);
+    */
+
+    Window root_window, parent_window;
+    Window *children = nullptr;
+    unsigned int num_children = 0;
+    if(XQueryTree(display, overlay_window, &root_window, &parent_window, &children, &num_children) == 0)
+        return None;
+
+    Window compositor_window = None;
+    if(num_children == 1) {
+        compositor_window = children[0];
+        const int screen_width = XWidthOfScreen(DefaultScreenOfDisplay(display));
+        const int screen_height = XHeightOfScreen(DefaultScreenOfDisplay(display));
+
+        XWindowAttributes attr;
+        if(!XGetWindowAttributes(display, compositor_window, &attr) || attr.width != screen_width || attr.height != screen_height)
+            compositor_window = None;
+    }
+
+    if(children)
+        XFree(children);
+
+    return compositor_window;
+}
+
 static void cleanup_window_pixmap(Display *dpy, WindowPixmap &pixmap) {
     if (pixmap.target_texture_id) {
         glDeleteTextures(1, &pixmap.target_texture_id);
@@ -164,6 +213,8 @@ static void cleanup_window_pixmap(Display *dpy, WindowPixmap &pixmap) {
         pixmap.texture_id = 0;
         pixmap.texture_width = 0;
         pixmap.texture_height = 0;
+        pixmap.texture_real_width = 0;
+        pixmap.texture_real_height = 0;
     }
 
     if (pixmap.glx_pixmap) {
@@ -176,10 +227,15 @@ static void cleanup_window_pixmap(Display *dpy, WindowPixmap &pixmap) {
         XFreePixmap(dpy, pixmap.pixmap);
         pixmap.pixmap = None;
     }
+
+    if(pixmap.composite_window) {
+        XCompositeUnredirectWindow(dpy, pixmap.composite_window, CompositeRedirectAutomatic);
+        pixmap.composite_window = None;
+    }
 }
 
 static bool recreate_window_pixmap(Display *dpy, Window window_id,
-                                   WindowPixmap &pixmap) {
+                                   WindowPixmap &pixmap, bool fallback_composite_window = true) {
     cleanup_window_pixmap(dpy, pixmap);
 
     XWindowAttributes attr;
@@ -273,10 +329,41 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT,
                              &pixmap.texture_height);
 
+    pixmap.texture_real_width = pixmap.texture_width;
+    pixmap.texture_real_height = pixmap.texture_height;
+
     if(pixmap.texture_width == 0 || pixmap.texture_height == 0) {
+        glBindTexture(GL_TEXTURE_2D, 0);        
         pixmap.texture_width = attr.width;
         pixmap.texture_height = attr.height;
-        fprintf(stderr, "Warning: failed to get texture size. You are probably running an unsupported compositor and recording the selected window doesn't work at the moment. This could also happen if you are trying to record a window with client-side decorations (GNOME issue). A black window will be displayed instead. A workaround is to record the whole monitor (which use NvFBC).\n");
+
+        pixmap.texture_real_width = pixmap.texture_width;
+        pixmap.texture_real_height = pixmap.texture_height;
+
+        if(fallback_composite_window) {
+            Window compositor_window = get_compositor_window(dpy);
+            if(!compositor_window) {
+                fprintf(stderr, "Warning: failed to get texture size. You are probably running an unsupported compositor and recording the selected window doesn't work at the moment. This could also happen if you are trying to record a window with client-side decorations. A black window will be displayed instead. A workaround is to record the whole monitor (which uses NvFBC).\n");
+                return false;
+            }
+
+            fprintf(stderr, "Warning: failed to get texture size. You are probably trying to record a window with client-side decorations (using GNOME?). Trying to fallback to recording the compositor proxy window\n");
+            XCompositeRedirectWindow(dpy, compositor_window, CompositeRedirectAutomatic);
+
+            if(recreate_window_pixmap(dpy, compositor_window, pixmap, false)) {
+                pixmap.composite_window = compositor_window;
+                pixmap.texture_width = attr.width;
+                pixmap.texture_height = attr.height;
+                return true;
+            }
+
+            pixmap.texture_width = attr.width;
+            pixmap.texture_height = attr.height;
+
+            return false;
+        } else {
+            fprintf(stderr, "Warning: failed to get texture size. You are probably running an unsupported compositor and recording the selected window doesn't work at the moment. This could also happen if you are trying to record a window with client-side decorations. A black window will be displayed instead. A workaround is to record the whole monitor (which uses NvFBC).\n");
+        }
     }
 
     fprintf(stderr, "texture width: %d, height: %d\n", pixmap.texture_width,
@@ -1004,6 +1091,8 @@ int main(int argc, char **argv) {
 
     uint32_t window_width = 0;
     uint32_t window_height = 0;
+    int window_x = 0;
+    int window_y = 0;
 
     NvFBCLibrary nv_fbc_library;
 
@@ -1086,8 +1175,12 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        window_width = attr.width;
-        window_height = attr.height;
+        window_width = std::max(0, attr.width);
+        window_height = std::max(0, attr.height);
+        window_x = attr.x;
+        window_y = attr.y;
+        Window c;    
+        XTranslateCoordinates(dpy, src_window_id, DefaultRootWindow(dpy), 0, 0, &window_x, &window_y, &c);
 
         XCompositeRedirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
 
@@ -1129,11 +1222,7 @@ int main(int argc, char **argv) {
         }
         glGetError(); // to clear the error caused deep in GLEW
 
-        if (!recreate_window_pixmap(dpy, src_window_id, window_pixmap)) {
-            fprintf(stderr, "Error: Failed to create glx pixmap for window: %lu\n",
-                    src_window_id);
-            return 1;
-        }
+        recreate_window_pixmap(dpy, src_window_id, window_pixmap);
 
         if(!record_area) {
             record_width = window_pixmap.texture_width;
@@ -1312,8 +1401,6 @@ int main(int argc, char **argv) {
     std::deque<AVPacket> frame_data_queue;
     bool frames_erased = false;
 
-    double prev_video_frame_time = clock_get_monotonic_seconds();
-
     const size_t audio_buffer_size = 1024 * 2 * 2;
     uint8_t *empty_audio = (uint8_t*)malloc(audio_buffer_size); // see sound.cpp
     if(!empty_audio) {
@@ -1418,6 +1505,7 @@ int main(int argc, char **argv) {
     handle_new_pid_file(replay_buffer_size_secs == -1 ? "record" : "replay");
     started = 1;
 
+    // Set update_fps to 24 to test if duplicate/delayed frames cause video/audio desync or too fast/slow video.
     const double update_fps = fps + 190;
     int64_t video_pts_counter = 0;
 
@@ -1442,10 +1530,13 @@ int main(int argc, char **argv) {
             }
 
             if (XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e) && e.xconfigure.window == src_window_id) {
+                while(XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e)) {}
+                window_x = e.xconfigure.x;
+                window_y = e.xconfigure.y;
                 // Window resize
-                if(e.xconfigure.width != window_width || e.xconfigure.height != window_height) {
-                    window_width = e.xconfigure.width;
-                    window_height = e.xconfigure.height;
+                if(e.xconfigure.width != (int)window_width || e.xconfigure.height != (int)window_height) {
+                    window_width = std::max(0, e.xconfigure.width);
+                    window_height = std::max(0, e.xconfigure.height);
                     window_resize_timer = glfwGetTime();
                     window_resized = true;
                 }
@@ -1533,10 +1624,56 @@ int main(int argc, char **argv) {
                 if(src_window_id) {
                     // TODO: Use a framebuffer instead. glCopyImageSubData requires
                     // opengl 4.2
+                    int source_x = 0;
+                    int source_y = 0;
+
+                    int source_width = window_pixmap.texture_width;
+                    int source_height = window_pixmap.texture_height;
+
+                    bool clamped = false;
+
+                    if(window_pixmap.composite_window) {
+                        source_x = window_x;
+                        source_y = window_y;
+
+                        int underflow_x = 0;
+                        int underflow_y = 0;
+
+                        if(source_x < 0) {
+                            underflow_x = -source_x;
+                            source_x = 0;
+                            source_width += source_x;
+                        }
+
+                        if(source_y < 0) {
+                            underflow_y = -source_y;
+                            source_y = 0;
+                            source_height += source_y;
+                        }
+
+                        const int clamped_source_width = std::max(0, window_pixmap.texture_real_width - source_x - underflow_x);
+                        const int clamped_source_height = std::max(0, window_pixmap.texture_real_height - source_y - underflow_y);
+
+                        if(clamped_source_width < source_width) {
+                            source_width = clamped_source_width;
+                            clamped = true;
+                        }
+
+                        if(clamped_source_height < source_height) {
+                            source_height = clamped_source_height;
+                            clamped = true;
+                        }
+                    }
+
+                    if(clamped) {
+                        // Requires opengl 4.4...
+                        glClearTexImage(window_pixmap.target_texture_id, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+                    }
+
                     glCopyImageSubData(
-                        window_pixmap.texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+                        window_pixmap.texture_id, GL_TEXTURE_2D, 0, source_x, source_y, 0,
                         window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-                        window_pixmap.texture_width, window_pixmap.texture_height, 1);
+                        source_width, source_height, 1);
                     int err = glGetError();
                     if(err != 0) {
                         static bool error_shown = false;
@@ -1583,7 +1720,7 @@ int main(int argc, char **argv) {
             }
 
             const double this_video_frame_time = clock_get_monotonic_seconds();
-            const int64_t expected_frames = (this_video_frame_time - start_time_pts) / target_fps;
+            const int64_t expected_frames = std::round((this_video_frame_time - start_time_pts) / target_fps);
 
             const int num_frames = std::max(0L, expected_frames - video_pts_counter);
             // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
@@ -1596,7 +1733,6 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "Error: avcodec_send_frame failed\n");
                 }
             }
-            prev_video_frame_time = this_video_frame_time;
             video_pts_counter += num_frames;
         }
 

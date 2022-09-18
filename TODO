@@ -8,7 +8,11 @@ Quickly changing workspace and back while recording under i3 breaks the screen r
 Remove hw_get_frame as it creates a new cuda device ptr which we dont use!
 Nvidia 515.57 supports nvfbc direct capture with mouse capture. Check if driver is equal or newer than this and use mouse capture in such situations (with direct capture) supports nvfbc direct capture with mouse capture.
 See https://trac.ffmpeg.org/wiki/EncodingForStreamingSites for optimizing streaming.
-Add -ma option to merge all audio tracks into one (muxing?).
+Add option to merge audio tracks into one (muxing?) by adding multiple audio streams in one -a arg separated by comma.
 Look at VK_EXT_external_memory_dma_buf.
 Allow setting a different output resolution than the input resolution.
 Use mov+faststart.
+Allow recording all monitors/selected monitor without nvfbc by recording the compositor proxy window and only recording the part that matches the monitor(s).
+Allow recording a region by recording the compositor proxy window / nvfbc window and copying part of it.
+Resizing the target window to be smaller than the initial size is buggy. The window texture ends up duplicated in the video.
+Handle frames (especially for applications with rounded client-side decorations, such as gnome applications. They are huge).

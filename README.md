@@ -6,8 +6,6 @@ This screen recorder can be used for recording your desktop offline, for live st
 where only the last few seconds are saved.
 
 ## Note
-Might now work when using a compositor such as picom when using the glx backend. Using the xrender backend with picom fixes this issue.\
-Does not work when using gtk client side decorations (such as on Pop OS). Either disable those (if possible), install gtk-nocsd or record the whole monitor/screen if you have NvFBC.\
 For NvFBC to work with PRIME, you must set the primary GPU to your dedicated Nvidia graphics card. On Pop OS, you can select the 'NVIDIA Graphics' option in the power menu, or on Arch Linux you can use Optimus Manager.\
 If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.\
 
