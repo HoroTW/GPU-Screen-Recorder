@@ -476,7 +476,7 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
     //codec_context->bit_rate = 64000;
     codec_context->sample_rate = 48000;
     codec_context->profile = FF_PROFILE_AAC_LOW;
-#if LIBAVCODEC_VERSION_MAJOR < 59
+#if LIBAVCODEC_VERSION_MAJOR < 60
     codec_context->channel_layout = AV_CH_LAYOUT_STEREO;
     codec_context->channels = 2;
 #else
@@ -609,7 +609,7 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
 
     frame->nb_samples = audio_codec_context->frame_size;
     frame->format = audio_codec_context->sample_fmt;
-#if LIBAVCODEC_VERSION_MAJOR < 59
+#if LIBAVCODEC_VERSION_MAJOR < 60
     frame->channels = audio_codec_context->channels;
     frame->channel_layout = audio_codec_context->channel_layout;
 #else
@@ -1292,7 +1292,7 @@ int main(int argc, char **argv) {
 
         audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, audio_input, {}, {}, audio_stream_index });
 
-#if LIBAVCODEC_VERSION_MAJOR < 59
+#if LIBAVCODEC_VERSION_MAJOR < 60
         const int num_channels = audio_codec_context->channels;
 #else
         const int num_channels = audio_codec_context->ch_layout.nb_channels;
@@ -1403,8 +1403,8 @@ int main(int argc, char **argv) {
     std::deque<AVPacket> frame_data_queue;
     bool frames_erased = false;
 
-    const size_t audio_buffer_size = 1024 * 2 * 2;
-    uint8_t *empty_audio = (uint8_t*)malloc(audio_buffer_size); // see sound.cpp
+    const size_t audio_buffer_size = 1024 * 2 * 2; // 2 bytes/sample, 2 channels
+    uint8_t *empty_audio = (uint8_t*)malloc(audio_buffer_size);
     if(!empty_audio) {
         fprintf(stderr, "Error: failed to create empty audio\n");
         exit(1);
