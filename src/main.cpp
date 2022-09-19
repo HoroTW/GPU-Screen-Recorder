@@ -533,6 +533,8 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->max_b_frames = 0;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
+    if(use_hevc)
+        codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
         case VideoQuality::MEDIUM:
 	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
