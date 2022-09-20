@@ -154,6 +154,15 @@ fail:
     return NULL;
 }
 
+static void pa_sound_device_mainloop_timed(pa_handle *p, int64_t timeout_ms) {
+    const double start_time = clock_get_monotonic_seconds();
+    while((clock_get_monotonic_seconds() - start_time) * 1000.0 < timeout_ms) {
+        pa_mainloop_prepare(p->mainloop, 1 * 1000);
+        pa_mainloop_poll(p->mainloop);
+        pa_mainloop_dispatch(p->mainloop);
+    }
+}
+
 // Returns a negative value on failure. Always blocks a time specified matching the sampling rate of the audio.
 static int pa_sound_device_read(pa_handle *p, void *data, size_t length) {
     assert(p);
@@ -173,28 +182,21 @@ static int pa_sound_device_read(pa_handle *p, void *data, size_t length) {
                 break;
 
             retry = false;
-
-            const double start_time = clock_get_monotonic_seconds();
-            while((clock_get_monotonic_seconds() - start_time) * 1000.0 < timeout_ms) {
-                pa_mainloop_prepare(p->mainloop, 1 * 1000);
-                pa_mainloop_poll(p->mainloop);
-                pa_mainloop_dispatch(p->mainloop);
-            }
-
+            pa_sound_device_mainloop_timed(p, timeout_ms);
             continue;
         }
 
         r = pa_stream_peek(p->stream, &p->read_data, &p->read_length);
         if(r != 0) {
             if(retry)
-                usleep(timeout_ms * 1000);
+                pa_sound_device_mainloop_timed(p, timeout_ms);
             return -1;
         }
 
         if(p->read_length < length || !p->read_data) {
             pa_stream_drop(p->stream);
             if(retry)
-                usleep(timeout_ms * 1000);
+                pa_sound_device_mainloop_timed(p, timeout_ms);
             return -1;
         }
 
