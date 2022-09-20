@@ -62,7 +62,6 @@ extern "C" {
 
 #include <deque>
 #include <future>
-#include <condition_variable>
 
 //#include <CL/cl.h>
 
@@ -434,7 +433,7 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
             } else {
                 av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
                 av_packet.stream_index = stream->index;
-                int ret = av_interleaved_write_frame(av_format_context, &av_packet);
+                int ret = av_write_frame(av_format_context, &av_packet);
                 if(ret < 0) {
                     fprintf(stderr, "Error: Failed to write frame index %d to muxer, reason: %s (%d)\n", av_packet.stream_index, av_error_to_string(ret), ret);
                 }
@@ -810,33 +809,51 @@ static std::future<void> save_replay_thread;
 static std::vector<AVPacket> save_replay_packets;
 static std::string save_replay_output_filepath;
 
-static void save_replay_async(AVCodecContext *video_codec_context, int video_stream_index, std::vector<AudioTrack> &audio_tracks, const std::deque<AVPacket> &frame_data_queue, bool frames_erased, std::string output_dir, std::string container_format) {
+static void save_replay_async(AVCodecContext *video_codec_context, int video_stream_index, std::vector<AudioTrack> &audio_tracks, const std::deque<AVPacket> &frame_data_queue, bool frames_erased, std::string output_dir, std::string container_format, std::mutex &write_output_mutex) {
     if(save_replay_thread.valid())
         return;
     
     size_t start_index = (size_t)-1;
-    for(size_t i = 0; i < frame_data_queue.size(); ++i) {
-        const AVPacket &av_packet = frame_data_queue[i];
-        if((av_packet.flags & AV_PKT_FLAG_KEY) && av_packet.stream_index == video_stream_index) {
-            start_index = i;
-            break;
+    int64_t video_pts_offset = 0;
+    int64_t audio_pts_offset = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(write_output_mutex);
+        start_index = (size_t)-1;
+        for(size_t i = 0; i < frame_data_queue.size(); ++i) {
+            const AVPacket &av_packet = frame_data_queue[i];
+            if((av_packet.flags & AV_PKT_FLAG_KEY) && av_packet.stream_index == video_stream_index) {
+                start_index = i;
+                break;
+            }
+        }
+
+        if(start_index == (size_t)-1)
+            return;
+
+        if(frames_erased) {
+            video_pts_offset = frame_data_queue[start_index].pts;
+            
+            // Find the next audio packet to use as audio pts offset
+            for(size_t i = start_index; i < frame_data_queue.size(); ++i) {
+                const AVPacket &av_packet = frame_data_queue[i];
+                if(av_packet.stream_index != video_stream_index) {
+                    audio_pts_offset = av_packet.pts;
+                    break;
+                }
+            }
+        } else {
+            start_index = 0;
+        }
+
+        save_replay_packets.resize(frame_data_queue.size());
+        for(size_t i = 0; i < frame_data_queue.size(); ++i) {
+            av_packet_ref(&save_replay_packets[i], &frame_data_queue[i]);
         }
     }
 
-    if(start_index == (size_t)-1)
-        return;
-
-    int64_t pts_offset = 0;
-    if(frames_erased)
-        pts_offset = frame_data_queue[start_index].pts;
-
-    save_replay_packets.resize(frame_data_queue.size());
-    for(size_t i = 0; i < frame_data_queue.size(); ++i) {
-        av_packet_ref(&save_replay_packets[i], &frame_data_queue[i]);
-    }
-
     save_replay_output_filepath = output_dir + "/Replay_" + get_date_str() + "." + container_format;
-    save_replay_thread = std::async(std::launch::async, [video_stream_index, container_format, start_index, pts_offset, video_codec_context, &audio_tracks]() mutable {
+    save_replay_thread = std::async(std::launch::async, [video_stream_index, container_format, start_index, video_pts_offset, audio_pts_offset, video_codec_context, &audio_tracks]() mutable {
         AVFormatContext *av_format_context;
         // The output format is automatically guessed from the file extension
         avformat_alloc_output_context2(&av_format_context, nullptr, container_format.c_str(), nullptr);
@@ -874,18 +891,22 @@ static void save_replay_async(AVCodecContext *video_codec_context, int video_str
             AVStream *stream = video_stream;
             AVCodecContext *codec_context = video_codec_context;
 
-            if(av_packet.stream_index != video_stream_index) {
+            if(av_packet.stream_index == video_stream_index) {
+                av_packet.pts -= video_pts_offset;
+                av_packet.dts -= video_pts_offset;
+            } else {
                 AudioTrack *audio_track = stream_index_to_audio_track_map[av_packet.stream_index];
                 stream = audio_track->stream;
                 codec_context = audio_track->codec_context;
+
+                av_packet.pts -= audio_pts_offset;
+                av_packet.dts -= audio_pts_offset;
             }
 
             av_packet.stream_index = stream->index;
-            av_packet.pts -= pts_offset;
-            av_packet.dts -= pts_offset;
             av_packet_rescale_ts(&av_packet, codec_context->time_base, stream->time_base);
 
-            int ret = av_interleaved_write_frame(av_format_context, &av_packet);
+            int ret = av_write_frame(av_format_context, &av_packet);
             if(ret < 0)
                 fprintf(stderr, "Error: Failed to write frame index %d to muxer, reason: %s (%d)\n", stream->index, av_error_to_string(ret), ret);
         }
@@ -1426,52 +1447,11 @@ int main(int argc, char **argv) {
             av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
             swr_init(swr);
 
-            std::deque<uint8_t*> buffered_audio;
-            std::mutex buffered_audio_mutex;
-            std::condition_variable buffered_audio_cv;
-            bool got_first_batch = false;
-
-            // TODO: Make the sound device read async instead of using a thread
-            std::thread sound_read_thread([&](){
-                while(running) {
-                    void *sound_buffer;
-                    int sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
-                    if(sound_buffer_size >= 0) {
-                        uint8_t *data = (uint8_t*)malloc(audio_track.sound_device.buffer_size);
-                        if(data) {
-                            memcpy(data, sound_buffer, audio_track.sound_device.buffer_size);
-                            std::unique_lock<std::mutex> lock(buffered_audio_mutex);
-                            buffered_audio.push_back(data);
-                            buffered_audio_cv.notify_one();
-                        }
-                    }
-                }
-            });
-
             while(running) {
-                uint8_t *audio_buffer;
-                bool free_audio;
-                {
-                    // TODO: Not a good solution to lack of audio as it causes dropped frames, but it's better then complete audio desync.
-                    // The first packet is delayed for some reason...
-                    std::unique_lock<std::mutex> lock(buffered_audio_mutex);
-                    if(got_first_batch)
-                        buffered_audio_cv.wait(lock, [&]{ return !running || !buffered_audio.empty(); });
-                    else
-                        buffered_audio_cv.wait_for(lock, std::chrono::milliseconds(21), [&]{ return !running || !buffered_audio.empty(); });
-                    if(!running)
-                        break;
-
-                    if(buffered_audio.empty()) {
-                        audio_buffer = empty_audio;
-                        free_audio = false;
-                    } else {
-                        audio_buffer = buffered_audio.front();
-                        buffered_audio.pop_front();
-                        free_audio = true;
-                        got_first_batch = true;
-                    }
-                }
+                void *sound_buffer;
+                int sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
+                if(sound_buffer_size < 0)
+                    sound_buffer = empty_audio;
 
                 int ret = av_frame_make_writable(audio_track.frame);
                 if (ret < 0) {
@@ -1480,7 +1460,7 @@ int main(int argc, char **argv) {
                 }
 
                 // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
-                swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&audio_buffer, audio_track.sound_device.frames);
+                swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.sound_device.frames);
                 audio_track.frame->pts = (clock_get_monotonic_seconds() - start_time_pts) * AV_TIME_BASE;
 
                 ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
@@ -1489,17 +1469,9 @@ int main(int argc, char **argv) {
                 } else {
                     fprintf(stderr, "Failed to encode audio!\n");
                 }
-
-                if(free_audio)
-                    free(audio_buffer);
             }
 
-            sound_read_thread.join();
-            while(!buffered_audio.empty()) {
-                free(buffered_audio.front());
-                buffered_audio.pop_front();
-            }
-
+            sound_device_close(&audio_track.sound_device);
             swr_free(&swr);
         }, av_format_context, &write_output_mutex);
     }
@@ -1749,7 +1721,7 @@ int main(int argc, char **argv) {
 
         if(save_replay == 1 && !save_replay_thread.valid() && replay_buffer_size_secs != -1) {
             save_replay = 0;
-            save_replay_async(video_codec_context, VIDEO_STREAM_INDEX, audio_tracks, frame_data_queue, frames_erased, filename, container_format);
+            save_replay_async(video_codec_context, VIDEO_STREAM_INDEX, audio_tracks, frame_data_queue, frames_erased, filename, container_format, write_output_mutex);
         }
 
         // av_frame_free(&frame);
@@ -1767,7 +1739,6 @@ int main(int argc, char **argv) {
 
     for(AudioTrack &audio_track : audio_tracks) {
         audio_track.thread.join();
-        sound_device_close(&audio_track.sound_device);
     }
 
     if (replay_buffer_size_secs == -1 && av_write_trailer(av_format_context) != 0) {
