@@ -483,7 +483,7 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
 #endif
 
     codec_context->time_base.num = 1;
-    codec_context->time_base.den = AV_TIME_BASE;
+    codec_context->time_base.den = codec_context->sample_rate;
     codec_context->framerate.num = fps;
     codec_context->framerate.den = 1;
 
@@ -1462,11 +1462,12 @@ int main(int argc, char **argv) {
             av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
             swr_init(swr);
 
+            int64_t pts = 0;
+            const double target_audio_hz = 1.0 / (double)audio_track.codec_context->sample_rate;
+
             while(running) {
                 void *sound_buffer;
                 int sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
-                if(sound_buffer_size < 0)
-                    sound_buffer = empty_audio;
 
                 int ret = av_frame_make_writable(audio_track.frame);
                 if (ret < 0) {
@@ -1474,15 +1475,42 @@ int main(int argc, char **argv) {
                     break;
                 }
 
-                // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
-                swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.sound_device.frames);
-                audio_track.frame->pts = (clock_get_monotonic_seconds() - start_time_pts) * AV_TIME_BASE;
+                const double this_audio_frame_time = clock_get_monotonic_seconds();
+                const int64_t expected_frames = std::round((this_audio_frame_time - start_time_pts) / target_audio_hz);
+                const int64_t num_missing_frames = std::max(0L, (expected_frames - pts) / audio_track.frame->nb_samples);
+                // Jesus is there a better way to do this? I JUST WANT TO KEEP VIDEO AND AUDIO SYNCED HOLY FUCK I WANT TO KILL MYSELF NOW.
+                // THIS PIECE OF SHIT WANTS EMPTY FRAMES OTHERWISE VIDEO PLAYS TOO FAST TO KEEP UP WITH AUDIO OR THE AUDIO PLAYS TOO EARLY.
+                // BUT WE CANT USE DELAYS TO GIVE DUMMY DATA BECAUSE PULSEAUDIO MIGHT GIVE AUDIO A BIG DELAYED!!!
+                if(num_missing_frames >= 5) {
+                    // TODO:
+                    //audio_track.frame->data[0] = empty_audio;
+                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.sound_device.frames);
+                    // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
+                    for(int i = 0; i < num_missing_frames; ++i) {
+                        audio_track.frame->pts = pts;
+                        pts += audio_track.frame->nb_samples;
+                        ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
+                        if(ret >= 0){
+                            receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
+                        } else {
+                            fprintf(stderr, "Failed to encode audio!\n");
+                        }
+                    }
+                }
 
-                ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
-                if(ret >= 0){
-                    receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
-                } else {
-                    fprintf(stderr, "Failed to encode audio!\n");
+                if(sound_buffer_size >= 0) {
+                    // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
+                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.sound_device.frames);
+
+                    audio_track.frame->pts = pts;
+                    pts += audio_track.frame->nb_samples;
+
+                    ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
+                    if(ret >= 0){
+                        receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
+                    } else {
+                        fprintf(stderr, "Failed to encode audio!\n");
+                    }
                 }
             }
 

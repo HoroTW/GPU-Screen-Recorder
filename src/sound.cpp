@@ -20,36 +20,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include <cmath>
 
 #include <pulse/pulseaudio.h>
 #include <pulse/mainloop.h>
 #include <pulse/xmalloc.h>
 #include <pulse/error.h>
-
-#define CHECK_DEAD_GOTO(p, rerror, label)                               \
-    do {                                                                \
-        if (!(p)->context || !PA_CONTEXT_IS_GOOD(pa_context_get_state((p)->context)) || \
-            !(p)->stream || !PA_STREAM_IS_GOOD(pa_stream_get_state((p)->stream))) { \
-            if (((p)->context && pa_context_get_state((p)->context) == PA_CONTEXT_FAILED) || \
-                ((p)->stream && pa_stream_get_state((p)->stream) == PA_STREAM_FAILED)) { \
-                if (rerror)                                             \
-                    *(rerror) = pa_context_errno((p)->context);         \
-            } else                                                      \
-                if (rerror)                                             \
-                    *(rerror) = PA_ERR_BADSTATE;                        \
-            goto label;                                                 \
-        }                                                               \
-    } while(false);
-
-static double clock_get_monotonic_seconds() {
-    struct timespec ts;
-    ts.tv_sec = 0;
-    ts.tv_nsec = 0;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 0.000000001;
-}
 
 static int sound_device_index = 0;
 
@@ -154,59 +130,30 @@ fail:
     return NULL;
 }
 
-static void pa_sound_device_mainloop_timed(pa_handle *p, int64_t timeout_ms) {
-    const double start_time = clock_get_monotonic_seconds();
-    while((clock_get_monotonic_seconds() - start_time) * 1000.0 < timeout_ms) {
-        pa_mainloop_prepare(p->mainloop, 1 * 1000);
-        pa_mainloop_poll(p->mainloop);
-        pa_mainloop_dispatch(p->mainloop);
-    }
-}
-
-// Returns a negative value on failure. Always blocks a time specified matching the sampling rate of the audio.
+// Returns a negative value on failure or if no data is available at the moment
 static int pa_sound_device_read(pa_handle *p, void *data, size_t length) {
     assert(p);
 
-    int r = 0;
-    int *rerror = &r;
-    bool retry = true;
-
-    pa_mainloop_iterate(p->mainloop, 0, NULL);
     const int64_t timeout_ms = std::round((1000.0 / (double)pa_stream_get_sample_spec(p->stream)->rate) * 1000.0);
+    pa_mainloop_prepare(p->mainloop, timeout_ms * 1000);
+    pa_mainloop_poll(p->mainloop);
+    pa_mainloop_dispatch(p->mainloop);
 
-    CHECK_DEAD_GOTO(p, rerror, fail);
+    if(pa_stream_readable_size(p->stream) < length)
+        return -1;
 
-    while(true) {
-        if(pa_stream_readable_size(p->stream) < length) {
-            if(!retry)
-                break;
+    int r = pa_stream_peek(p->stream, &p->read_data, &p->read_length);
+    if(r != 0)
+        return -1;
 
-            retry = false;
-            pa_sound_device_mainloop_timed(p, timeout_ms);
-            continue;
-        }
-
-        r = pa_stream_peek(p->stream, &p->read_data, &p->read_length);
-        if(r != 0) {
-            if(retry)
-                pa_sound_device_mainloop_timed(p, timeout_ms);
-            return -1;
-        }
-
-        if(p->read_length < length || !p->read_data) {
-            pa_stream_drop(p->stream);
-            if(retry)
-                pa_sound_device_mainloop_timed(p, timeout_ms);
-            return -1;
-        }
-
-        memcpy(data, p->read_data, length);
+    if(p->read_length < length || !p->read_data) {
         pa_stream_drop(p->stream);
-        return 0;
+        return -1;
     }
 
-    fail:
-    return -1;
+    memcpy(data, p->read_data, length);
+    pa_stream_drop(p->stream);
+    return 0;
 }
 
 int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int num_channels, unsigned int period_frame_size) {
