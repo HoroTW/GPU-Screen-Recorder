@@ -5,7 +5,6 @@ Track window damages and only update then. That is better for output file size.
 Getting the texture of a window when using a compositor is an nvidia specific limitation. When gpu-screen-recorder supports other gpus then this can be ignored.
 Remove dependency on glfw (and glew?).
 Quickly changing workspace and back while recording under i3 breaks the screen recorder. i3 probably unmaps windows in other workspaces.
-Remove hw_get_frame as it creates a new cuda device ptr which we dont use!
 Nvidia 515.57 supports nvfbc direct capture with mouse capture. Check if driver is equal or newer than this and use mouse capture in such situations (with direct capture) supports nvfbc direct capture with mouse capture.
 See https://trac.ffmpeg.org/wiki/EncodingForStreamingSites for optimizing streaming.
 Add option to merge audio tracks into one (muxing?) by adding multiple audio streams in one -a arg separated by comma.
@@ -16,3 +15,4 @@ Allow recording all monitors/selected monitor without nvfbc by recording the com
 Allow recording a region by recording the compositor proxy window / nvfbc window and copying part of it.
 Resizing the target window to be smaller than the initial size is buggy. The window texture ends up duplicated in the video.
 Handle frames (especially for applications with rounded client-side decorations, such as gnome applications. They are huge).
+Use nvenc directly, which allows removing the use of cuda.

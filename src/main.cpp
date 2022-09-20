@@ -624,9 +624,13 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
     return frame;
 }
 
+static AVBufferRef* dummy_hw_frame_init(size_t size) {
+    return av_buffer_alloc(size);
+}
+
 static void open_video(AVCodecContext *codec_context,
                        WindowPixmap &window_pixmap, AVBufferRef **device_ctx,
-                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context) {
+                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context, bool use_nvfbc) {
     int ret;
 
     *device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
@@ -657,6 +661,11 @@ static void open_video(AVCodecContext *codec_context,
     hw_frame_context->format = codec_context->pix_fmt;
     hw_frame_context->device_ref = *device_ctx;
     hw_frame_context->device_ctx = (AVHWDeviceContext *)(*device_ctx)->data;
+
+    if(use_nvfbc) {
+        hw_frame_context->pool = av_buffer_pool_init(1, dummy_hw_frame_init);
+        hw_frame_context->initial_pool_size = 1;
+    }
 
     if (av_hwframe_ctx_init(frame_context) < 0) {
         fprintf(stderr, "Error: Failed to initialize hardware frame context "
@@ -1295,7 +1304,7 @@ int main(int argc, char **argv) {
 
     AVBufferRef *device_ctx;
     CUgraphicsResource cuda_graphics_resource;
-    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx);
+    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx, !src_window_id);
     if(video_stream)
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
@@ -1403,9 +1412,15 @@ int main(int argc, char **argv) {
     frame->width = video_codec_context->width;
     frame->height = video_codec_context->height;
 
-    if (av_hwframe_get_buffer(video_codec_context->hw_frames_ctx, frame, 0) < 0) {
-        fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
-        exit(1);
+    if(src_window_id) {
+        if (av_hwframe_get_buffer(video_codec_context->hw_frames_ctx, frame, 0) < 0) {
+            fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
+            exit(1);
+        }
+    } else {
+        frame->hw_frames_ctx = av_buffer_ref(video_codec_context->hw_frames_ctx);
+        frame->buf[0] = av_buffer_pool_get(((AVHWFramesContext*)video_codec_context->hw_frames_ctx->data)->pool);
+        frame->extended_data = frame->data;
     }
 
     if(window_pixmap.texture_width < record_width)
