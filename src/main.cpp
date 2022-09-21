@@ -624,9 +624,15 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
     return frame;
 }
 
+#if FF_API_BUFFER_SIZE_T
+static AVBufferRef* dummy_hw_frame_init(int size) {
+    return av_buffer_alloc(size);
+}
+#else
 static AVBufferRef* dummy_hw_frame_init(size_t size) {
     return av_buffer_alloc(size);
 }
+#endif
 
 static void open_video(AVCodecContext *codec_context,
                        WindowPixmap &window_pixmap, AVBufferRef **device_ctx,
