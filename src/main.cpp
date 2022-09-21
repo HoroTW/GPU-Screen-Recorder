@@ -624,7 +624,7 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
     return frame;
 }
 
-#if FF_API_BUFFER_SIZE_T
+#if LIBAVUTIL_VERSION_MAJOR < 57
 static AVBufferRef* dummy_hw_frame_init(int size) {
     return av_buffer_alloc(size);
 }
