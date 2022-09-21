@@ -1470,10 +1470,16 @@ int main(int argc, char **argv) {
 
             int64_t pts = 0;
             const double target_audio_hz = 1.0 / (double)audio_track.codec_context->sample_rate;
+            double received_audio_time = clock_get_monotonic_seconds();
 
             while(running) {
                 void *sound_buffer;
                 int sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
+                const bool got_audio_data = sound_buffer_size >= 0;
+
+                const double this_audio_frame_time = clock_get_monotonic_seconds();
+                if(got_audio_data)
+                    received_audio_time = this_audio_frame_time;
 
                 int ret = av_frame_make_writable(audio_track.frame);
                 if (ret < 0) {
@@ -1481,15 +1487,14 @@ int main(int argc, char **argv) {
                     break;
                 }
 
-                const double this_audio_frame_time = clock_get_monotonic_seconds();
-                const int64_t expected_frames = std::round((this_audio_frame_time - start_time_pts) / target_audio_hz);
-                const int64_t num_missing_frames = std::max(0L, (expected_frames - pts) / audio_track.frame->nb_samples);
+                const int64_t num_missing_frames = std::round((this_audio_frame_time - received_audio_time) / target_audio_hz / (int64_t)audio_track.frame->nb_samples);
                 // Jesus is there a better way to do this? I JUST WANT TO KEEP VIDEO AND AUDIO SYNCED HOLY FUCK I WANT TO KILL MYSELF NOW.
                 // THIS PIECE OF SHIT WANTS EMPTY FRAMES OTHERWISE VIDEO PLAYS TOO FAST TO KEEP UP WITH AUDIO OR THE AUDIO PLAYS TOO EARLY.
                 // BUT WE CANT USE DELAYS TO GIVE DUMMY DATA BECAUSE PULSEAUDIO MIGHT GIVE AUDIO A BIG DELAYED!!!
-                if(num_missing_frames >= 5) {
+                if(num_missing_frames >= 5 || (num_missing_frames > 0 && got_audio_data)) {
                     // TODO:
                     //audio_track.frame->data[0] = empty_audio;
+                    received_audio_time = this_audio_frame_time;
                     swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.sound_device.frames);
                     // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
                     for(int i = 0; i < num_missing_frames; ++i) {
@@ -1504,7 +1509,7 @@ int main(int argc, char **argv) {
                     }
                 }
 
-                if(sound_buffer_size >= 0) {
+                if(got_audio_data) {
                     // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
                     swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.sound_device.frames);
 

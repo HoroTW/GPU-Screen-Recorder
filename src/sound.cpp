@@ -21,13 +21,37 @@
 #include <stdio.h>
 #include <string.h>
 #include <cmath>
+#include <time.h>
 
 #include <pulse/pulseaudio.h>
 #include <pulse/mainloop.h>
 #include <pulse/xmalloc.h>
 #include <pulse/error.h>
 
+#define CHECK_DEAD_GOTO(p, rerror, label)                               \
+    do {                                                                \
+        if (!(p)->context || !PA_CONTEXT_IS_GOOD(pa_context_get_state((p)->context)) || \
+            !(p)->stream || !PA_STREAM_IS_GOOD(pa_stream_get_state((p)->stream))) { \
+            if (((p)->context && pa_context_get_state((p)->context) == PA_CONTEXT_FAILED) || \
+                ((p)->stream && pa_stream_get_state((p)->stream) == PA_STREAM_FAILED)) { \
+                if (rerror)                                             \
+                    *(rerror) = pa_context_errno((p)->context);         \
+            } else                                                      \
+                if (rerror)                                             \
+                    *(rerror) = PA_ERR_BADSTATE;                        \
+            goto label;                                                 \
+        }                                                               \
+    } while(false);
+
 static int sound_device_index = 0;
+
+static double clock_get_monotonic_seconds() {
+    struct timespec ts;
+    ts.tv_sec = 0;
+    ts.tv_nsec = 0;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 0.000000001;
+}
 
 struct pa_handle {
     pa_context *context;
@@ -36,6 +60,9 @@ struct pa_handle {
 
     const void *read_data;
     size_t read_index, read_length;
+
+    uint8_t *output_data;
+    size_t output_index, output_length;
 
     int operation_success;
 };
@@ -54,6 +81,11 @@ static void pa_sound_device_free(pa_handle *s) {
     if (s->mainloop)
         pa_mainloop_free(s->mainloop);
 
+    if (s->output_data) {
+        free(s->output_data);
+        s->output_data = NULL;
+    }
+
     pa_xfree(s);
 }
 
@@ -68,6 +100,21 @@ static pa_handle* pa_sound_device_new(const char *server,
     int error = PA_ERR_INTERNAL, r;
 
     p = pa_xnew0(pa_handle, 1);
+    p->read_data = NULL;
+    p->read_length = 0;
+    p->read_index = 0;
+
+    const int buffer_size = attr->maxlength;
+    void *buffer = malloc(buffer_size);
+    if(!buffer) {
+        fprintf(stderr, "failed to allocate buffer for audio\n");
+        *rerror = -1;
+        return NULL;
+    }
+
+    p->output_data = (uint8_t*)buffer;
+    p->output_length = buffer_size;
+    p->output_index = 0;
 
     if (!(p->mainloop = pa_mainloop_new()))
         goto fail;
@@ -130,30 +177,86 @@ fail:
     return NULL;
 }
 
-// Returns a negative value on failure or if no data is available at the moment
-static int pa_sound_device_read(pa_handle *p, void *data, size_t length) {
+// Returns a negative value on failure or if |p->output_length| data is not available within the time frame specified by the sample rate
+static int pa_sound_device_read(pa_handle *p) {
     assert(p);
 
     const int64_t timeout_ms = std::round((1000.0 / (double)pa_stream_get_sample_spec(p->stream)->rate) * 1000.0);
-    pa_mainloop_prepare(p->mainloop, timeout_ms * 1000);
-    pa_mainloop_poll(p->mainloop);
-    pa_mainloop_dispatch(p->mainloop);
+    const double start_time = clock_get_monotonic_seconds();
 
-    if(pa_stream_readable_size(p->stream) < length)
-        return -1;
+    bool success = false;
+    int r = 0;
+    int *rerror = &r;
+    CHECK_DEAD_GOTO(p, rerror, fail);
 
-    int r = pa_stream_peek(p->stream, &p->read_data, &p->read_length);
-    if(r != 0)
-        return -1;
+    while (p->output_index < p->output_length) {
+        if((clock_get_monotonic_seconds() - start_time) * 1000 >= timeout_ms)
+            return -1;
 
-    if(p->read_length < length || !p->read_data) {
-        pa_stream_drop(p->stream);
-        return -1;
+        if(p->read_data) {
+            assert(p->output_index == 0);
+            memcpy(p->output_data, (const uint8_t*)p->read_data + p->read_index, p->read_length);
+            p->output_index += p->read_length;
+            p->read_data = NULL;
+            p->read_length = 0;
+            p->read_index = 0;
+
+            if(pa_stream_drop(p->stream) != 0)
+                goto fail;
+        }
+
+        pa_mainloop_prepare(p->mainloop, 1 * 1000); // 1 ms
+        pa_mainloop_poll(p->mainloop);
+        pa_mainloop_dispatch(p->mainloop);
+
+        if(pa_stream_peek(p->stream, &p->read_data, &p->read_length) < 0)
+            goto fail;
+
+        if(!p->read_data && p->read_length == 0)
+            continue;
+
+        if(!p->read_data && p->read_length > 0) {
+            // There is a hole in the stream :( drop it. Maybe we should generate silence instead? TODO
+            if(pa_stream_drop(p->stream) != 0)
+                goto fail;
+            continue;
+        }
+
+        if(p->read_length <= 0) {
+            CHECK_DEAD_GOTO(p, rerror, fail);
+            continue;
+        }
+
+        const size_t space_free_in_output_buffer = p->output_length - p->output_index;
+        if(space_free_in_output_buffer < p->read_length) {
+            assert(p->read_index == 0);
+            memcpy(p->output_data + p->output_index, p->read_data, space_free_in_output_buffer);
+            p->output_index = 0;
+            p->read_index += space_free_in_output_buffer;
+            p->read_length -= space_free_in_output_buffer;
+            break;
+        } else {
+            assert(p->read_index == 0);
+            memcpy(p->output_data + p->output_index, p->read_data, p->read_length);
+            p->output_index += p->read_length;
+            p->read_data = NULL;
+            p->read_length = 0;
+            p->read_index = 0;
+            
+            if(pa_stream_drop(p->stream) != 0)
+                goto fail;
+
+            if(p->output_index == p->output_length) {
+                p->output_index = 0;
+                break;
+            }
+        }
     }
 
-    memcpy(data, p->read_data, length);
-    pa_stream_drop(p->stream);
-    return 0;
+    success = true;
+
+    fail:
+    return success ? 0 : -1;
 }
 
 int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int num_channels, unsigned int period_frame_size) {
@@ -181,33 +284,21 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
         return -1;
     }
 
-    int buffer_size = buffer_attr.maxlength;
-    void *buffer = malloc(buffer_size);
-    if(!buffer) {
-        fprintf(stderr, "failed to allocate buffer for audio\n");
-        pa_sound_device_free(handle);
-        return -1;
-    }
-
-    fprintf(stderr, "Using pulseaudio\n");
-
     device->handle = handle;
-    device->buffer = buffer;
-    device->buffer_size = buffer_size;
     device->frames = period_frame_size;
     return 0;
 }
 
 void sound_device_close(SoundDevice *device) {
     pa_sound_device_free((pa_handle*)device->handle);
-    free(device->buffer);
 }
 
 int sound_device_read_next_chunk(SoundDevice *device, void **buffer) {
-    if(pa_sound_device_read((pa_handle*)device->handle, device->buffer, device->buffer_size) < 0) {
+    pa_handle *pa = (pa_handle*)device->handle;
+    if(pa_sound_device_read(pa) < 0) {
         //fprintf(stderr, "pa_simple_read() failed: %s\n", pa_strerror(error));
         return -1;
     }
-    *buffer = device->buffer;
+    *buffer = pa->output_data;
     return device->frames;
 }

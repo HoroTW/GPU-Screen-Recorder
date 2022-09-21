@@ -20,8 +20,6 @@
 
 typedef struct {
     void *handle;
-    void *buffer;
-    int buffer_size;
     unsigned int frames;
 } SoundDevice;
 
