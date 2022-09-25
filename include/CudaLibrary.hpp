@@ -50,8 +50,11 @@ struct Cuda {
         dlerror(); // clear
         void *lib = dlopen("libcuda.so", RTLD_LAZY);
         if(!lib) {
-            fprintf(stderr, "Error: failed to load libcuda.so, error: %s\n", dlerror());
-            return false;
+            lib = dlopen("libcuda.so.1", RTLD_LAZY);
+            if(!lib) {
+                fprintf(stderr, "Error: failed to load libcuda.so and libcuda.so.1, error: %s\n", dlerror());
+                return false;
+            }
         }
 
         cuInit = (CUINIT)load_symbol(lib, "cuInit");
