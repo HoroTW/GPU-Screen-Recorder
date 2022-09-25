@@ -30,13 +30,15 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#include "../include/sound.hpp"
-
 #define GLX_GLXEXT_PROTOTYPES
 #include <GL/glew.h>
 #include <GL/glx.h>
 #include <GL/glxext.h>
 #include <GLFW/glfw3.h>
+
+#include "../include/sound.hpp"
+#include "../include/NvFBCLibrary.hpp"
+#include "../include/CudaLibrary.hpp"
 
 #include <X11/extensions/Xcomposite.h>
 //#include <X11/Xatom.h>
@@ -52,13 +54,10 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/time.h>
 }
-#include <cudaGL.h>
 
 extern "C" {
 #include <libavutil/hwcontext.h>
 }
-
-#include "../include/NvFBCLibrary.hpp"
 
 #include <deque>
 #include <future>
@@ -70,6 +69,8 @@ extern "C" {
 static const int VIDEO_STREAM_INDEX = 0;
 
 static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
+
+static Cuda cuda;
 
 static char* av_error_to_string(int err) {
     if(av_strerror(err, av_error_buffer, sizeof(av_error_buffer)) < 0)
@@ -692,22 +693,22 @@ static void open_video(AVCodecContext *codec_context,
     if(window_pixmap.target_texture_id != 0) {
         CUresult res;
         CUcontext old_ctx;
-        res = cuCtxPopCurrent(&old_ctx);
-        res = cuCtxPushCurrent(cuda_context);
-        res = cuGraphicsGLRegisterImage(
+        res = cuda.cuCtxPopCurrent_v2(&old_ctx);
+        res = cuda.cuCtxPushCurrent_v2(cuda_context);
+        res = cuda.cuGraphicsGLRegisterImage(
             cuda_graphics_resource, window_pixmap.target_texture_id, GL_TEXTURE_2D,
             CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
-        // cuGraphicsUnregisterResource(*cuda_graphics_resource);
+        // cuda.cuGraphicsUnregisterResource(*cuda_graphics_resource);
         if (res != CUDA_SUCCESS) {
             const char *err_str;
-            cuGetErrorString(res, &err_str);
+            cuda.cuGetErrorString(res, &err_str);
             fprintf(stderr,
-                    "Error: cuGraphicsGLRegisterImage failed, error %s, texture "
+                    "Error: cuda.cuGraphicsGLRegisterImage failed, error %s, texture "
                     "id: %u\n",
                     err_str, window_pixmap.target_texture_id);
             exit(1);
         }
-        res = cuCtxPopCurrent(&old_ctx);
+        res = cuda.cuCtxPopCurrent_v2(&old_ctx);
     }
 }
 
@@ -1090,37 +1091,42 @@ int main(int argc, char **argv) {
         replay_buffer_size_secs += 5; // Add a few seconds to account of lost packets because of non-keyframe packets skipped
     }
 
+    if(!cuda.load()) {
+        fprintf(stderr, "Error: failed to load cuda\n");
+        return 2;
+    }
+
     CUresult res;
 
-    res = cuInit(0);
+    res = cuda.cuInit(0);
     if(res != CUDA_SUCCESS) {
         const char *err_str;
-        cuGetErrorString(res, &err_str);
+        cuda.cuGetErrorString(res, &err_str);
         fprintf(stderr, "Error: cuInit failed, error %s (result: %d)\n", err_str, res);
         return 1;
     }
 
     int nGpu = 0;
-    cuDeviceGetCount(&nGpu);
+    cuda.cuDeviceGetCount(&nGpu);
     if (nGpu <= 0) {
         fprintf(stderr, "Error: no cuda supported devices found\n");
         return 1;
     }
 
     CUdevice cu_dev;
-    res = cuDeviceGet(&cu_dev, 0);
+    res = cuda.cuDeviceGet(&cu_dev, 0);
     if(res != CUDA_SUCCESS) {
         const char *err_str;
-        cuGetErrorString(res, &err_str);
+        cuda.cuGetErrorString(res, &err_str);
         fprintf(stderr, "Error: unable to get CUDA device, error: %s (result: %d)\n", err_str, res);
         return 1;
     }
 
     CUcontext cu_ctx;
-    res = cuCtxCreate_v2(&cu_ctx, CU_CTX_SCHED_AUTO, cu_dev);
+    res = cuda.cuCtxCreate_v2(&cu_ctx, CU_CTX_SCHED_AUTO, cu_dev);
     if(res != CUDA_SUCCESS) {
         const char *err_str;
-        cuGetErrorString(res, &err_str);
+        cuda.cuGetErrorString(res, &err_str);
         fprintf(stderr, "Error: unable to create CUDA context, error: %s (result: %d)\n", err_str, res);
         return 1;
     }
@@ -1386,16 +1392,16 @@ int main(int argc, char **argv) {
     CUcontext old_ctx;
     CUarray mapped_array;
     if(src_window_id) {
-        res = cuCtxPopCurrent(&old_ctx);
-        res = cuCtxPushCurrent(cu_ctx);
+        res = cuda.cuCtxPopCurrent_v2(&old_ctx);
+        res = cuda.cuCtxPushCurrent_v2(cu_ctx);
 
         // Get texture
-        res = cuGraphicsResourceSetMapFlags(
+        res = cuda.cuGraphicsResourceSetMapFlags(
             cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
-        res = cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
+        res = cuda.cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
 
         // Map texture to cuda array
-        res = cuGraphicsSubResourceGetMappedArray(&mapped_array,
+        res = cuda.cuGraphicsSubResourceGetMappedArray(&mapped_array,
                                                 cuda_graphics_resource, 0, 0);
     }
 
@@ -1561,6 +1567,8 @@ int main(int argc, char **argv) {
                 while(XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e)) {}
                 window_x = e.xconfigure.x;
                 window_y = e.xconfigure.y;
+                Window c;
+                XTranslateCoordinates(dpy, src_window_id, DefaultRootWindow(dpy), 0, 0, &window_x, &window_y, &c);
                 // Window resize
                 if(e.xconfigure.width != (int)window_width || e.xconfigure.height != (int)window_height) {
                     window_width = std::max(0, e.xconfigure.width);
@@ -1579,25 +1587,25 @@ int main(int argc, char **argv) {
                 //video_stream->codec->width = window_pixmap.texture_width & ~1;
                 //video_stream->codec->height = window_pixmap.texture_height & ~1;
 
-                cuGraphicsUnregisterResource(cuda_graphics_resource);
-                res = cuGraphicsGLRegisterImage(
+                cuda.cuGraphicsUnregisterResource(cuda_graphics_resource);
+                res = cuda.cuGraphicsGLRegisterImage(
                     &cuda_graphics_resource, window_pixmap.target_texture_id, GL_TEXTURE_2D,
                     CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
                 if (res != CUDA_SUCCESS) {
                     const char *err_str;
-                    cuGetErrorString(res, &err_str);
+                    cuda.cuGetErrorString(res, &err_str);
                     fprintf(stderr,
-                            "Error: cuGraphicsGLRegisterImage failed, error %s, texture "
+                            "Error: cuda.cuGraphicsGLRegisterImage failed, error %s, texture "
                             "id: %u\n",
                             err_str, window_pixmap.target_texture_id);
                     running = false;
                     break;
                 }
 
-                res = cuGraphicsResourceSetMapFlags(
+                res = cuda.cuGraphicsResourceSetMapFlags(
                     cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
-                res = cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
-                res = cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
+                res = cuda.cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
+                res = cuda.cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
 
                 av_frame_free(&frame);
                 frame = av_frame_alloc();
@@ -1626,7 +1634,9 @@ int main(int argc, char **argv) {
                 else
                     frame->height = record_height & ~1;
 
-                cuMemsetD8((CUdeviceptr)frame->data[0], 0, record_width * record_height * 4);
+                // Make the new completely black to clear unused parts
+                // TODO: cuMemsetD32?
+                cuda.cuMemsetD8_v2((CUdeviceptr)frame->data[0], 0, record_width * record_height * 4);
             }
         }
 
@@ -1732,7 +1742,7 @@ int main(int argc, char **argv) {
                     memcpy_struct.dstPitch = frame->linesize[0];
                     memcpy_struct.WidthInBytes = frame->width * 4;
                     memcpy_struct.Height = frame->height;
-                    cuMemcpy2D(&memcpy_struct);
+                    cuda.cuMemcpy2D_v2(&memcpy_struct);
 
                     frame_captured = true;
                 } else {
@@ -1744,7 +1754,7 @@ int main(int argc, char **argv) {
                     frame_captured = nv_fbc_library.capture(&src_cu_device_ptr, &byte_size);
                     frame->data[0] = (uint8_t*)src_cu_device_ptr;
                 }
-                // res = cuCtxPopCurrent(&old_ctx);
+                // res = cuda.cuCtxPopCurrent_v2(&old_ctx);
             }
 
             const double this_video_frame_time = clock_get_monotonic_seconds();

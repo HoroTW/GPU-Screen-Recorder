@@ -18,7 +18,7 @@ Using NvFBC (recording the monitor/screen) is not faster than not using NvFBC (r
 If you are running an Arch Linux based distro, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
 If you are running an Ubuntu based distro then run `install_ubuntu.sh` as root: `sudo ./install_ubuntu.sh`.\
 
-On other distros you need to install dependencies manually and run `build.sh`. Dependencies: `glew glfw3 cuda ffmpeg libx11 libxcomposite libpulse-simple`.\
+On other distros you need to install dependencies manually and run `build.sh`. Dependencies: `glew glfw3 ffmpeg libx11 libxcomposite libpulse-simple`. You need to additionally have `cuda` installed when you run `gpu-screen-recorder`.\
 If you use a distro that isn't user friendly, such as fedora, then you can also install gpu-screen-recorder-gtk with flatpak here: [gpu-screen-recorder-flatpak](https://git.dec05eba.com/gpu-screen-recorder-flatpak/about/) (Note: this install method is slow).\
 Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
 
@@ -41,7 +41,7 @@ This gpu-screen-recorder keeps the window image on the GPU and sends it directly
 FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to an output video, and not when recording the screen when using x11grab. So FFMPEG has the same fps drop issues that OBS has.
 
 # TODO
-* Support AMD and Intel, using VAAPI. cuda and vaapi should be loaded at runtime using dlopen instead of linking to those
+* Support AMD and Intel, using VAAPI.
 libraries at compile-time.
 * Clean up the code!
 * Dynamically change bitrate/resolution to match desired fps. This would be helpful when streaming for example, where the encode output speed also depends on upload speed to the streaming service.

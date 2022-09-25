@@ -1,7 +1,6 @@
 #pragma once
 
 #include "NvFBC.h"
-#include <cuda.h>
 
 #include <dlfcn.h>
 #include <string.h>
@@ -174,7 +173,7 @@ public:
         return false;
     }
 
-    bool capture(/*out*/ CUdeviceptr *cu_device_ptr, uint32_t *byte_size) {
+    bool capture(/*out*/ void *cu_device_ptr, uint32_t *byte_size) {
         if(!library || !fbc_handle_created || !cu_device_ptr || !byte_size)
             return false;
 
