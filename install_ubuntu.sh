@@ -5,11 +5,11 @@ cd "$script_dir"
 
 [ $(id -u) -ne 0 ] && echo "You need root privileges to run the install script" && exit 1
 
-dpkg -l cuda > /dev/null 2>&1
+dpkg -l nvidia-cuda-dev > /dev/null 2>&1
 cuda_missing="$?"
 
 set -e
-apt-get -y install build-essential cuda\
+apt-get -y install build-essential nvidia-cuda-dev\
 	libswresample-dev libavformat-dev libavcodec-dev libavutil-dev\
 	libx11-dev libxcomposite-dev\
 	libglew-dev libglfw3-dev\
