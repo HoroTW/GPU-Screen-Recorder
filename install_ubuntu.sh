@@ -11,12 +11,11 @@ cuda_missing="$?"
 set -e
 apt-get -y install build-essential nvidia-cuda-dev\
 	libswresample-dev libavformat-dev libavcodec-dev libavutil-dev\
-	libx11-dev libxcomposite-dev\
-	libglew-dev libglfw3-dev\
+	libgl-dev libx11-dev libxcomposite-dev\
 	libpulse-dev
 
-dependencies="glew libavcodec libavformat libavutil x11 xcomposite glfw3 libpulse libswresample"
-includes="$(pkg-config --cflags $dependencies) -Iinclude"
+dependencies="libavcodec libavformat libavutil x11 xcomposite libpulse libswresample"
+includes="$(pkg-config --cflags $dependencies) -Iexternal"
 libs="$(pkg-config --libs $dependencies) -ldl -pthread -lm"
 g++ -c src/sound.cpp -O2 $includes
 g++ -c src/main.cpp -O2 $includes

@@ -30,15 +30,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#define GLX_GLXEXT_PROTOTYPES
-#include <GL/glew.h>
-#include <GL/glx.h>
-#include <GL/glxext.h>
-#include <GLFW/glfw3.h>
-
 #include "../include/sound.hpp"
 #include "../include/NvFBCLibrary.hpp"
 #include "../include/CudaLibrary.hpp"
+#include "../include/GlLibrary.hpp"
 
 #include <X11/extensions/Xcomposite.h>
 //#include <X11/Xatom.h>
@@ -62,8 +57,6 @@ extern "C" {
 #include <deque>
 #include <future>
 
-//#include <CL/cl.h>
-
 // TODO: Remove LIBAVUTIL_VERSION_MAJOR checks in the future when ubuntu, pop os LTS etc update ffmpeg to >= 5.0
 
 static const int VIDEO_STREAM_INDEX = 0;
@@ -71,6 +64,7 @@ static const int VIDEO_STREAM_INDEX = 0;
 static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
 
 static Cuda cuda;
+static GlLibrary gl;
 
 static char* av_error_to_string(int err) {
     if(av_strerror(err, av_error_buffer, sizeof(av_error_buffer)) < 0)
@@ -90,14 +84,14 @@ struct ScopedGLXFBConfig {
 struct WindowPixmap {
     Pixmap pixmap = None;
     GLXPixmap glx_pixmap = None;
-    GLuint texture_id = 0;
-    GLuint target_texture_id = 0;
+    unsigned int texture_id = 0;
+    unsigned int target_texture_id = 0;
 
-    GLint texture_width = 0;
-    GLint texture_height = 0;
+    int texture_width = 0;
+    int texture_height = 0;
 
-    GLint texture_real_width = 0;
-    GLint texture_real_height = 0;
+    int texture_real_width = 0;
+    int texture_real_height = 0;
 
     Window composite_window = None;
 };
@@ -204,12 +198,12 @@ static Window get_compositor_window(Display *display) {
 
 static void cleanup_window_pixmap(Display *dpy, WindowPixmap &pixmap) {
     if (pixmap.target_texture_id) {
-        glDeleteTextures(1, &pixmap.target_texture_id);
+        gl.glDeleteTextures(1, &pixmap.target_texture_id);
         pixmap.target_texture_id = 0;
     }
 
     if (pixmap.texture_id) {
-        glDeleteTextures(1, &pixmap.texture_id);
+        gl.glDeleteTextures(1, &pixmap.texture_id);
         pixmap.texture_id = 0;
         pixmap.texture_width = 0;
         pixmap.texture_height = 0;
@@ -218,8 +212,8 @@ static void cleanup_window_pixmap(Display *dpy, WindowPixmap &pixmap) {
     }
 
     if (pixmap.glx_pixmap) {
-        glXDestroyPixmap(dpy, pixmap.glx_pixmap);
-        glXReleaseTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT);
+        gl.glXDestroyPixmap(dpy, pixmap.glx_pixmap);
+        gl.glXReleaseTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT);
         pixmap.glx_pixmap = None;
     }
 
@@ -263,7 +257,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
                                   None};
 
     int c;
-    GLXFBConfig *configs = glXChooseFBConfig(dpy, 0, pixmap_config, &c);
+    GLXFBConfig *configs = gl.glXChooseFBConfig(dpy, 0, pixmap_config, &c);
     if (!configs) {
         fprintf(stderr, "Failed too choose fb config\n");
         return false;
@@ -275,7 +269,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     GLXFBConfig config;
     for (int i = 0; i < c; i++) {
         config = configs[i];
-        XVisualInfo *visual = glXGetVisualFromFBConfig(dpy, config);
+        XVisualInfo *visual = gl.glXGetVisualFromFBConfig(dpy, config);
         if (!visual)
             continue;
 
@@ -299,8 +293,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
         return false;
     }
 
-    GLXPixmap glx_pixmap =
-        glXCreatePixmap(dpy, config, new_window_pixmap, pixmap_attribs);
+    GLXPixmap glx_pixmap = gl.glXCreatePixmap(dpy, config, new_window_pixmap, pixmap_attribs);
     if (!glx_pixmap) {
         fprintf(stderr, "Failed to create glx pixmap\n");
         XFreePixmap(dpy, new_window_pixmap);
@@ -311,29 +304,29 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     pixmap.glx_pixmap = glx_pixmap;
 
     //glEnable(GL_TEXTURE_2D);
-    glGenTextures(1, &pixmap.texture_id);
-    glBindTexture(GL_TEXTURE_2D, pixmap.texture_id);
+    gl.glGenTextures(1, &pixmap.texture_id);
+    gl.glBindTexture(GL_TEXTURE_2D, pixmap.texture_id);
 
     // glEnable(GL_BLEND);
     // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+    gl.glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
+    gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
                     GL_NEAREST); // GL_LINEAR );
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+    gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     GL_NEAREST); // GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
     //glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,
+    gl.glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,
                              &pixmap.texture_width);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT,
+    gl.glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT,
                              &pixmap.texture_height);
 
     pixmap.texture_real_width = pixmap.texture_width;
     pixmap.texture_real_height = pixmap.texture_height;
 
     if(pixmap.texture_width == 0 || pixmap.texture_height == 0) {
-        glBindTexture(GL_TEXTURE_2D, 0);        
+        gl.glBindTexture(GL_TEXTURE_2D, 0);        
         pixmap.texture_width = attr.width;
         pixmap.texture_height = attr.height;
 
@@ -375,29 +368,128 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
     // TODO: Investigate if it's somehow possible to use the pixmap texture
     // directly, this should improve performance since only less image copy is
     // then needed every frame.
-    glGenTextures(1, &pixmap.target_texture_id);
-    glBindTexture(GL_TEXTURE_2D, pixmap.target_texture_id);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, pixmap.texture_width,
+    gl.glGenTextures(1, &pixmap.target_texture_id);
+    gl.glBindTexture(GL_TEXTURE_2D, pixmap.target_texture_id);
+    gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, pixmap.texture_width,
                  pixmap.texture_height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-    int err2 = glGetError();
+    unsigned int err2 = gl.glGetError();
     //fprintf(stderr, "error: %d\n", err2);
     // glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
     // glGenerateTextureMipmapEXT(glxpixmap, GL_TEXTURE_2D);
 
     // glGenerateMipmap(GL_TEXTURE_2D);
 
-    // glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-    // glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+    // gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+    // gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+    gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
                     GL_NEAREST); // GL_LINEAR );
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+    gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     GL_NEAREST); // GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
     //glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
-    glBindTexture(GL_TEXTURE_2D, 0);
+    gl.glBindTexture(GL_TEXTURE_2D, 0);
 
     return pixmap.texture_id != 0 && pixmap.target_texture_id != 0;
+}
+
+static Window create_opengl_window(Display *display) {
+    const int attr[] = {
+        GLX_RENDER_TYPE, GLX_RGBA_BIT,
+        GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
+        GLX_DOUBLEBUFFER, True,
+        GLX_RED_SIZE, 8,
+        GLX_GREEN_SIZE, 8,
+        GLX_BLUE_SIZE, 8,
+        GLX_ALPHA_SIZE, 8,
+        GLX_DEPTH_SIZE, 0,
+        None
+    };
+
+    XVisualInfo *visual_info = NULL;
+    GLXFBConfig fbconfig = NULL;
+
+    int numfbconfigs = 0;
+    GLXFBConfig *fbconfigs = gl.glXChooseFBConfig(display, DefaultScreen(display), attr, &numfbconfigs);
+    for(int i = 0; i < numfbconfigs; i++) {
+        visual_info = gl.glXGetVisualFromFBConfig(display, fbconfigs[i]);
+        if(!visual_info)
+            continue;
+
+        fbconfig = fbconfigs[i];
+        break;
+    }
+
+    if(!visual_info) {
+        fprintf(stderr, "mgl error: no appropriate visual found\n");
+        return -1;
+    }
+
+    // TODO: Core profile? GLX_CONTEXT_CORE_PROFILE_BIT_ARB.
+    // TODO: Remove need for 4.2 when copy texture function has been removed
+    int context_attribs[] = {
+        GLX_CONTEXT_MAJOR_VERSION_ARB, 4,
+        GLX_CONTEXT_MINOR_VERSION_ARB, 2,
+        GLX_CONTEXT_FLAGS_ARB, GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
+        None
+    };
+
+    GLXContext gl_context = gl.glXCreateContextAttribsARB(display, fbconfig, nullptr, True, context_attribs);
+    if(!gl_context) {
+        fprintf(stderr, "Error: failed to create gl context\n");
+        return None;
+    }
+
+    Colormap colormap = XCreateColormap(display, DefaultRootWindow(display), visual_info->visual, AllocNone);
+    if(!colormap) {
+        fprintf(stderr, "Error: failed to create x11 colormap\n");
+        gl.glXDestroyContext(display, gl_context);
+    }
+
+    XSetWindowAttributes window_attr;
+    window_attr.colormap = colormap;
+
+    // TODO: Is there a way to remove the need to create a window?
+    Window window = XCreateWindow(display, DefaultRootWindow(display), 0, 0, 1, 1, 0, visual_info->depth, InputOutput, visual_info->visual, CWColormap, &window_attr);
+
+    if(!window) {
+        fprintf(stderr, "Error: failed to create gl window\n");
+        goto fail;
+    }
+
+    if(!gl.glXMakeContextCurrent(display, window, window, gl_context)) {
+        fprintf(stderr, "Error: failed to make gl context current\n");
+        goto fail;
+    }
+
+    return window;
+
+    fail:
+    XFreeColormap(display, colormap);
+    gl.glXDestroyContext(display, gl_context);
+    return None;
+}
+
+/* TODO: check for glx swap control extension string (GLX_EXT_swap_control, etc) */
+static void set_vertical_sync_enabled(Display *display, Window window, bool enabled) {     
+    int result = 0;
+
+    if(gl.glXSwapIntervalEXT) {
+        gl.glXSwapIntervalEXT(display, window, enabled ? 1 : 0);
+    } else if(gl.glXSwapIntervalMESA) {
+        result = gl.glXSwapIntervalMESA(enabled ? 1 : 0);
+    } else if(gl.glXSwapIntervalSGI) {
+        result = gl.glXSwapIntervalSGI(enabled ? 1 : 0);
+    } else {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            fprintf(stderr, "Warning: setting vertical sync not supported\n");
+        }
+    }
+
+    if(result != 0)
+        fprintf(stderr, "Warning: setting vertical sync failed\n");
 }
 
 // |stream| is only required for non-replay mode
@@ -408,9 +500,10 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
                            int replay_buffer_size_secs,
                            bool &frames_erased,
 						   std::mutex &write_output_mutex) {
-    AVPacket av_packet;
-    memset(&av_packet, 0, sizeof(av_packet));
     for (;;) {
+        // TODO: Use av_packet_alloc instead because sizeof(av_packet) might not be future proof(?)
+        AVPacket av_packet;
+        memset(&av_packet, 0, sizeof(av_packet));
         av_packet.data = NULL;
         av_packet.size = 0;
         int res = avcodec_receive_packet(av_codec_context, &av_packet);
@@ -420,7 +513,7 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
 
 			std::lock_guard<std::mutex> lock(write_output_mutex);
             if(replay_buffer_size_secs != -1) {
-                double time_now = glfwGetTime();
+                double time_now = clock_get_monotonic_seconds();
                 double replay_time_elapsed = time_now - replay_start_time;
 
                 AVPacket new_pack;
@@ -442,16 +535,18 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
             av_packet_unref(&av_packet);
         } else if (res == AVERROR(EAGAIN)) { // we have no packet
                                              // fprintf(stderr, "No packet!\n");
+            av_packet_unref(&av_packet);
             break;
         } else if (res == AVERROR_EOF) { // this is the end of the stream
             fprintf(stderr, "End of stream!\n");
+            av_packet_unref(&av_packet);
             break;
         } else {
             fprintf(stderr, "Unexpected error: %d\n", res);
+            av_packet_unref(&av_packet);
             break;
         }
     }
-    //av_packet_unref(&av_packet);
 }
 
 static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_context, int fps) {
@@ -584,7 +679,21 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     // stream->time_base = codec_context->time_base;
     // codec_context->ticks_per_frame = 30;
     //av_opt_set(codec_context->priv_data, "tune", "hq", 0);
-    //av_opt_set(codec_context->priv_data, "rc", "vbr", 0);
+    // TODO: Do this for better file size? also allows setting qmin, qmax per frame? which can then be used to dynamically set bitrate to reduce quality
+    // if live streaming is slow or if the users harddrive is cant handle writing megabytes of data per second.
+    #if 0
+    char qmin_str[32];
+    snprintf(qmin_str, sizeof(qmin_str), "%d", codec_context->qmin);
+
+    char qmax_str[32];
+    snprintf(qmax_str, sizeof(qmax_str), "%d", codec_context->qmax);
+
+    av_opt_set(codec_context->priv_data, "cq", qmax_str, 0);
+    av_opt_set(codec_context->priv_data, "rc", "vbr", 0);
+    av_opt_set(codec_context->priv_data, "qmin", qmin_str, 0);
+    av_opt_set(codec_context->priv_data, "qmax", qmax_str, 0);
+    codec_context->bit_rate = 0;
+    #endif
 
     // Some formats want stream headers to be seperate
     if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
@@ -726,7 +835,7 @@ static void usage() {
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. Optional, no audio track is added by default.\n");
-    fprintf(stderr, "  -q    Video quality. Should either be 'medium', 'high' or 'ultra'. Optional, set to 'medium' be default.\n");
+    fprintf(stderr, "  -q    Video quality. Should either be 'medium', 'high' or 'ultra'. 'medium' is the recommended as higher values, especially 'ultra' can be placebo most of the time. Optional, set to 'medium' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
@@ -1198,13 +1307,18 @@ int main(int argc, char **argv) {
 
     WindowPixmap window_pixmap;
     Display *dpy = nullptr;
-    GLFWwindow *window = nullptr;
+    Window window = None;
     if(src_window_id) {
         dpy = XOpenDisplay(nullptr);
         if (!dpy) {
             fprintf(stderr, "Error: Failed to open display\n");
             return 1;
         }
+
+        //#if defined(DEBUG)
+        XSetErrorHandler(x11_error_handler);
+        XSetIOErrorHandler(x11_io_error_handler);
+        //#endif
 
         bool has_name_pixmap = x11_supports_composite_named_window_pixmap(dpy);
         if (!has_name_pixmap) {
@@ -1228,44 +1342,16 @@ int main(int argc, char **argv) {
 
         XCompositeRedirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
 
-        // glXMakeContextCurrent(Display *dpy, GLXDrawable draw, GLXDrawable read,
-        // GLXContext ctx)
-        if (!glfwInit()) {
-            fprintf(stderr, "Error: Failed to initialize glfw\n");
+        if(!gl.load()) {
+            fprintf(stderr, "Error: Failed to load opengl\n");
             return 1;
         }
 
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_RESIZABLE, GL_FALSE);
-        glfwWindowHint(GLFW_VISIBLE, GL_FALSE);
-
-        window = glfwCreateWindow(1, 1, "gpu-screen-recorder", nullptr, nullptr);
-        if (!window) {
-            fprintf(stderr, "Error: Failed to create glfw window\n");
-            glfwTerminate();
+        window = create_opengl_window(dpy);
+        if(!window)
             return 1;
-        }
 
-        glfwMakeContextCurrent(window);
-        glfwSwapInterval(0);
-
-    //#if defined(DEBUG)
-        XSetErrorHandler(x11_error_handler);
-        XSetIOErrorHandler(x11_io_error_handler);
-    //#endif
-
-        glewExperimental = GL_TRUE;
-        GLenum nGlewError = glewInit();
-        if (nGlewError != GLEW_OK) {
-            fprintf(stderr, "%s - Error initializing GLEW! %s\n", __FUNCTION__,
-                    glewGetErrorString(nGlewError));
-            return 1;
-        }
-        glGetError(); // to clear the error caused deep in GLEW
-
+        set_vertical_sync_enabled(dpy, window, false);
         recreate_window_pixmap(dpy, src_window_id, window_pixmap);
 
         if(!record_area) {
@@ -1278,11 +1364,6 @@ int main(int argc, char **argv) {
         window_pixmap.target_texture_id = 0;
         window_pixmap.texture_width = window_width;
         window_pixmap.texture_height = window_height;
-
-        if (!glfwInit()) {
-            fprintf(stderr, "Error: Failed to initialize glfw\n");
-            return 1;
-        }
     }
 
     // Video start
@@ -1408,7 +1489,7 @@ int main(int argc, char **argv) {
     // Release texture
     // res = cuGraphicsUnmapResources(1, &cuda_graphics_resource, 0);
 
-    double start_time = glfwGetTime();
+    double start_time = clock_get_monotonic_seconds();
     double frame_timer_start = start_time;
     double window_resize_timer = start_time;
     bool window_resized = false;
@@ -1447,7 +1528,7 @@ int main(int argc, char **argv) {
 
     std::mutex write_output_mutex;
 
-    double record_start_time = glfwGetTime();
+    const double record_start_time = clock_get_monotonic_seconds();
     std::deque<AVPacket> frame_data_queue;
     bool frames_erased = false;
 
@@ -1460,7 +1541,7 @@ int main(int argc, char **argv) {
     memset(empty_audio, 0, audio_buffer_size);
 
     for(AudioTrack &audio_track : audio_tracks) {
-        audio_track.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, start_time_pts, &audio_track, empty_audio](AVFormatContext *av_format_context, std::mutex *write_output_mutex) mutable {
+        audio_track.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, &audio_track, empty_audio](AVFormatContext *av_format_context, std::mutex *write_output_mutex) mutable {
             SwrContext *swr = swr_alloc();
             if(!swr) {
                 fprintf(stderr, "Failed to create SwrContext\n");
@@ -1546,10 +1627,9 @@ int main(int argc, char **argv) {
     bool redraw = true;
     XEvent e;
     while (running) {
-        double frame_start = glfwGetTime();
-        glfwPollEvents();
+        double frame_start = clock_get_monotonic_seconds();
         if(window)
-            glClear(GL_COLOR_BUFFER_BIT);
+            gl.glClear(GL_COLOR_BUFFER_BIT);
 
         redraw = true;
 
@@ -1559,7 +1639,7 @@ int main(int argc, char **argv) {
             }
 
             if (XCheckTypedWindowEvent(dpy, src_window_id, Expose, &e) && e.xexpose.count == 0) {
-                window_resize_timer = glfwGetTime();
+                window_resize_timer = clock_get_monotonic_seconds();
                 window_resized = true;
             }
 
@@ -1573,13 +1653,13 @@ int main(int argc, char **argv) {
                 if(e.xconfigure.width != (int)window_width || e.xconfigure.height != (int)window_height) {
                     window_width = std::max(0, e.xconfigure.width);
                     window_height = std::max(0, e.xconfigure.height);
-                    window_resize_timer = glfwGetTime();
+                    window_resize_timer = clock_get_monotonic_seconds();
                     window_resized = true;
                 }
             }
 
             const double window_resize_timeout = 1.0; // 1 second
-            if(window_resized && glfwGetTime() - window_resize_timer >= window_resize_timeout) {
+            if(window_resized && clock_get_monotonic_seconds() - window_resize_timer >= window_resize_timeout) {
                 window_resized = false;
                 fprintf(stderr, "Resize window!\n");
                 recreate_window_pixmap(dpy, src_window_id, window_pixmap);
@@ -1642,7 +1722,7 @@ int main(int argc, char **argv) {
 
         ++fps_counter;
 
-        double time_now = glfwGetTime();
+        double time_now = clock_get_monotonic_seconds();
         double frame_timer_elapsed = time_now - frame_timer_start;
         double elapsed = time_now - start_time;
         if (elapsed >= 1.0) {
@@ -1704,15 +1784,17 @@ int main(int argc, char **argv) {
                     }
 
                     if(clamped) {
-                        // Requires opengl 4.4...
-                        glClearTexImage(window_pixmap.target_texture_id, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+                        // Requires opengl 4.4... TODO: Replace with earlier opengl if opengl < 4.2
+                        if(gl.glClearTexImage)
+                            gl.glClearTexImage(window_pixmap.target_texture_id, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
                     }
 
-                    glCopyImageSubData(
+                    // Requires opengl 4.2... TODO: Replace with earlier opengl if opengl < 4.2
+                    gl.glCopyImageSubData(
                         window_pixmap.texture_id, GL_TEXTURE_2D, 0, source_x, source_y, 0,
                         window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
                         source_width, source_height, 1);
-                    int err = glGetError();
+                    unsigned int err = gl.glGetError();
                     if(err != 0) {
                         static bool error_shown = false;
                         if(!error_shown) {
@@ -1720,8 +1802,8 @@ int main(int argc, char **argv) {
                             fprintf(stderr, "Error: glCopyImageSubData failed, gl error: %d\n", err);
                         }
                     }
-                    glfwSwapBuffers(window);
-                    // int err = glGetError();
+                    gl.glXSwapBuffers(dpy, window);
+                    // int err = gl.glGetError();
                     // fprintf(stderr, "error: %d\n", err);
 
                     // TODO: Remove this copy, which is only possible by using nvenc directly and encoding window_pixmap.target_texture_id
@@ -1789,7 +1871,7 @@ int main(int argc, char **argv) {
         }
 
         // av_frame_free(&frame);
-        double frame_end = glfwGetTime();
+        double frame_end = clock_get_monotonic_seconds();
         double frame_sleep_fps = 1.0 / update_fps;
         double sleep_time = frame_sleep_fps - (frame_end - frame_start);
         if(sleep_time > 0.0)
@@ -1812,10 +1894,8 @@ int main(int argc, char **argv) {
     if(replay_buffer_size_secs == -1 && !(output_format->flags & AVFMT_NOFILE))
         avio_close(av_format_context->pb);
 
-    if(dpy) {
-        XCompositeUnredirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
+    if(dpy)
         XCloseDisplay(dpy);
-    }
 
     unlink(pid_file);
     free(empty_audio);
