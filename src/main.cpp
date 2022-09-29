@@ -97,8 +97,7 @@ struct WindowPixmap {
 };
 
 enum class VideoQuality {
-    MEDIUM,
-    HIGH,
+    VERY_HIGH,
     ULTRA
 };
 
@@ -628,10 +627,10 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->max_b_frames = 0;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
-    if(use_hevc)
-        codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
+    //if(use_hevc)
+    //    codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
-        case VideoQuality::MEDIUM:
+        case VideoQuality::VERY_HIGH:
 	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
             if(use_hevc) {
                 codec_context->qmin = 20;
@@ -645,7 +644,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
             //codec_context->profile = FF_PROFILE_H264_HIGH;
             //av_opt_set(codec_context->priv_data, "preset", "p4", 0);
             break;
-        case VideoQuality::HIGH:
+        case VideoQuality::ULTRA:
             if(use_hevc) {
                 codec_context->qmin = 17;
                 codec_context->qmax = 30;
@@ -657,20 +656,6 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
             //av_opt_set(codec_context->priv_data, "preset", "p5", 0);
-            break;
-        case VideoQuality::ULTRA:
-	        codec_context->bit_rate = 15000000 + (codec_context->width * codec_context->height) / 2;
-            if(use_hevc) {
-                codec_context->qmin = 16;
-                codec_context->qmax = 25;
-            } else {
-                codec_context->qmin = 3;
-                codec_context->qmax = 13;
-            }
-            //av_opt_set(codec_context->priv_data, "preset", "veryslow", 0);
-            //av_opt_set(codec_context->priv_data, "profile", "high", 0);
-            //codec_context->profile = FF_PROFILE_H264_HIGH;
-            //av_opt_set(codec_context->priv_data, "preset", "p7", 0);
             break;
     }
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
@@ -835,7 +820,7 @@ static void usage() {
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. Optional, no audio track is added by default.\n");
-    fprintf(stderr, "  -q    Video quality. Should either be 'medium', 'high' or 'ultra'. 'medium' is the recommended as higher values, especially 'ultra' can be placebo most of the time. Optional, set to 'medium' be default.\n");
+    fprintf(stderr, "  -q    Video quality. Should either be 'very_high' or 'ultra'. 'very_high' is the recommended, especially when live streaming or when you have a slower harddrive. Optional, set to 'very_high' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
@@ -1175,17 +1160,16 @@ int main(int argc, char **argv) {
 
     const char *quality_str = args["-q"].value();
     if(!quality_str)
-        quality_str = "medium";
+        quality_str = "very_high";
 
+    // medium and high exist for backwards compatibility
     VideoQuality quality;
-    if(strcmp(quality_str, "medium") == 0) {
-        quality = VideoQuality::MEDIUM;
-    } else if(strcmp(quality_str, "high") == 0) {
-        quality = VideoQuality::HIGH;
-    } else if(strcmp(quality_str, "ultra") == 0) {
+    if(strcmp(quality_str, "medium") == 0 || strcmp(quality_str, "very_high") == 0) {
+        quality = VideoQuality::VERY_HIGH;
+    } else if(strcmp(quality_str, "high") == 0 || strcmp(quality_str, "ultra") == 0) {
         quality = VideoQuality::ULTRA;
     } else {
-        fprintf(stderr, "Error: -q should either be either 'medium', 'high' or 'ultra', got: '%s'\n", quality_str);
+        fprintf(stderr, "Error: -q should either be either 'very_high' or 'ultra', got: '%s'\n", quality_str);
         usage();
     }
 

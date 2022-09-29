@@ -29,7 +29,7 @@ public:
             return true;
 
         dlerror(); // clear
-        void *lib = dlopen("libnvidia-fbc.so.1", RTLD_NOW);
+        void *lib = dlopen("libnvidia-fbc.so.1", RTLD_LAZY);
         if(!lib) {
             fprintf(stderr, "Error: failed to load libnvidia-fbc.so.1, error: %s\n", dlerror());
             return false;
