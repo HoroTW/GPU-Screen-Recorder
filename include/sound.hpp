@@ -18,10 +18,18 @@
 #ifndef GPU_SCREEN_RECORDER_H
 #define GPU_SCREEN_RECORDER_H
 
+#include <vector>
+#include <string>
+
 typedef struct {
     void *handle;
     unsigned int frames;
 } SoundDevice;
+
+struct AudioInput {
+    std::string name;
+    std::string description;
+};
 
 /*
     Get a sound device by name, returning the device into the @device parameter.
@@ -38,5 +46,7 @@ void sound_device_close(SoundDevice *device);
     Returns the number of frames read, or a negative value on failure.
 */
 int sound_device_read_next_chunk(SoundDevice *device, void **buffer);
+
+std::vector<AudioInput> get_pulseaudio_inputs();
 
 #endif /* GPU_SCREEN_RECORDER_H */

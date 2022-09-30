@@ -27,7 +27,7 @@ Run `scripts/interactive.sh` or run gpu-screen-recorder directly, for example: `
 Then stop the screen recorder with Ctrl+C, which will also save the recording.\
 Send signal SIGUSR1 (`killall -SIGUSR1 gpu-screen-recorder`) to gpu-screen-recorder when in replay mode to save the replay. The paths to the saved files is output to stdout after the recording is saved.\
 You can find the default output audio device (headset, speakers) with the command `pactl get-default-sink`. Add `monitor` to the end of that to use that as an audio input in gpu-screen-recorder.\
-You can find the default input audio device (microphone) with the command `pactl get-default-source`.\
+You can find the default input audio device (microphone) with the command `pactl get-default-source`. This input should not have `monitor` added to the end when used in gpu-screen-recorder.\
 There is also a gui for the gpu-screen-recorder called [gpu-screen-recorder-gtk](https://git.dec05eba.com/gpu-screen-recorder-gtk/).
 
 # Demo

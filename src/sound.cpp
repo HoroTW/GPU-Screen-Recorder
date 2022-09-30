@@ -277,7 +277,7 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
 
     pa_handle *handle = pa_sound_device_new(nullptr, stream_name, name, stream_name, &ss, &buffer_attr, &error);
     if(!handle) {
-        fprintf(stderr, "pa_simple_new() failed: %s. Audio input device %s might not be valid\n", pa_strerror(error), name);
+        fprintf(stderr, "pa_sound_device_new() failed: %s. Audio input device %s might not be valid\n", pa_strerror(error), name);
         return -1;
     }
 
@@ -298,4 +298,75 @@ int sound_device_read_next_chunk(SoundDevice *device, void **buffer) {
     }
     *buffer = pa->output_data;
     return device->frames;
+}
+
+static void pa_state_cb(pa_context *c, void *userdata) {
+    pa_context_state state = pa_context_get_state(c);
+    int *pa_ready = (int*)userdata;
+    switch(state) {
+        case PA_CONTEXT_UNCONNECTED:
+        case PA_CONTEXT_CONNECTING:
+        case PA_CONTEXT_AUTHORIZING:
+        case PA_CONTEXT_SETTING_NAME:
+        default:
+            break;
+        case PA_CONTEXT_FAILED:
+        case PA_CONTEXT_TERMINATED:
+            *pa_ready = 2;
+            break;
+        case PA_CONTEXT_READY:
+            *pa_ready = 1;
+            break;
+    }
+}
+
+static void pa_sourcelist_cb(pa_context *ctx, const pa_source_info *source_info, int eol, void *userdata) {
+    if(eol > 0)
+        return;
+
+    std::vector<AudioInput> *inputs = (std::vector<AudioInput>*)userdata;
+    inputs->push_back({ source_info->name, source_info->description });
+}
+
+std::vector<AudioInput> get_pulseaudio_inputs() {
+    std::vector<AudioInput> inputs;
+    pa_mainloop *main_loop = pa_mainloop_new();
+
+    pa_context *ctx = pa_context_new(pa_mainloop_get_api(main_loop), "gpu-screen-recorder");
+    pa_context_connect(ctx, NULL, PA_CONTEXT_NOFLAGS, NULL);
+    int state = 0;
+    int pa_ready = 0;
+    pa_context_set_state_callback(ctx, pa_state_cb, &pa_ready);
+
+    pa_operation *pa_op = NULL;
+
+    for(;;) {
+        // Not ready
+        if(pa_ready == 0) {
+            pa_mainloop_iterate(main_loop, 1, NULL);
+            continue;
+        }
+
+        switch(state) {
+            case 0: {
+                pa_op = pa_context_get_source_info_list(ctx, pa_sourcelist_cb, &inputs);
+                ++state;
+                break;
+            }
+        }
+
+        // Couldn't get connection to the server
+        if(pa_ready == 2 || (state == 1 && pa_op && pa_operation_get_state(pa_op) == PA_OPERATION_DONE)) {
+            if(pa_op)
+                pa_operation_unref(pa_op);
+            pa_context_disconnect(ctx);
+            pa_context_unref(ctx);
+            pa_mainloop_free(main_loop);
+            return inputs;
+        }
+
+        pa_mainloop_iterate(main_loop, 1, NULL);
+    }
+
+    pa_mainloop_free(main_loop);
 }

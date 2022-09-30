@@ -1073,6 +1073,28 @@ int main(int argc, char **argv) {
     }
 
     Arg &audio_input_arg = args["-a"];
+    const std::vector<AudioInput> audio_inputs = get_pulseaudio_inputs();
+
+    // Manually check if the audio inputs we give exist. This is only needed for pipewire, not pulseaudio.
+    // Pipewire instead DEFAULTS TO THE DEFAULT AUDIO INPUT. THAT'S RETARDED.
+    // OH, YOU MISSPELLED THE AUDIO INPUT? FUCK YOU
+    for(const char *audio_input : audio_input_arg.values) {
+        bool match = false;
+        for(const auto &existing_audio_input : audio_inputs) {
+            if(strcmp(audio_input, existing_audio_input.name.c_str()) == 0) {
+                match = true;
+                break;
+            }
+        }
+
+        if(!match) {
+            fprintf(stderr, "Error: Audio input device '%s' is not a valid input device. Expected one of:\n", audio_input);
+            for(const auto &existing_audio_input : audio_inputs) {
+                fprintf(stderr, "    %s\n", existing_audio_input.name.c_str());
+            }
+            exit(2);
+        }
+    }
 
     uint32_t region_x = 0;
     uint32_t region_y = 0;
