@@ -43,8 +43,6 @@
         }                                                               \
     } while(false);
 
-static int sound_device_index = 0;
-
 static double clock_get_monotonic_seconds() {
     struct timespec ts;
     ts.tv_sec = 0;
@@ -274,11 +272,10 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
     buffer_attr.fragsize = buffer_attr.maxlength;
 
     // We want a unique stream name for every device which allows each input to be a different box in pipewire graph software
-    char stream_name[64];
-    snprintf(stream_name, sizeof(stream_name), "record-%d", sound_device_index);
-    ++sound_device_index;
+    char stream_name[1024];
+    snprintf(stream_name, sizeof(stream_name), "gpu-screen-recorder-%s", name);
 
-    pa_handle *handle = pa_sound_device_new(nullptr, "gpu-screen-recorder", name, stream_name, &ss, &buffer_attr, &error);
+    pa_handle *handle = pa_sound_device_new(nullptr, stream_name, name, stream_name, &ss, &buffer_attr, &error);
     if(!handle) {
         fprintf(stderr, "pa_simple_new() failed: %s. Audio input device %s might not be valid\n", pa_strerror(error), name);
         return -1;
