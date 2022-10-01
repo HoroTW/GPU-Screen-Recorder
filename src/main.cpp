@@ -1036,9 +1036,7 @@ static AudioInput parse_audio_input_arg(const char *str) {
     AudioInput audio_input;
     audio_input.name = str;
     const size_t index = audio_input.name.find('/');
-    if(index == std::string::npos) {
-        audio_input.description = "gpu-screen-recorder-" + audio_input.name;
-    } else {
+    if(index != std::string::npos) {
         audio_input.description = audio_input.name.substr(0, index);
         audio_input.name.erase(audio_input.name.begin(), audio_input.name.begin() + index + 1);
     }
@@ -1086,26 +1084,28 @@ int main(int argc, char **argv) {
 
     const Arg &audio_input_arg = args["-a"];
     const std::vector<AudioInput> audio_inputs = get_pulseaudio_inputs();
-
     std::vector<AudioInput> requested_audio_inputs;
-    for(const char *audio_input : audio_input_arg.values) {
-        requested_audio_inputs.push_back(parse_audio_input_arg(audio_input));
-    }
 
     // Manually check if the audio inputs we give exist. This is only needed for pipewire, not pulseaudio.
     // Pipewire instead DEFAULTS TO THE DEFAULT AUDIO INPUT. THAT'S RETARDED.
     // OH, YOU MISSPELLED THE AUDIO INPUT? FUCK YOU
-    for(const AudioInput &audio_input : requested_audio_inputs) {
+    for(const char *audio_input : audio_input_arg.values) {
+        requested_audio_inputs.push_back(parse_audio_input_arg(audio_input));
+        AudioInput &request_audio_input = requested_audio_inputs.back();
+
         bool match = false;
         for(const auto &existing_audio_input : audio_inputs) {
-            if(strcmp(audio_input.name.c_str(), existing_audio_input.name.c_str()) == 0) {
+            if(strcmp(request_audio_input.name.c_str(), existing_audio_input.name.c_str()) == 0) {
+                if(request_audio_input.description.empty())
+                    request_audio_input.description = "gsr-" + existing_audio_input.description;
+
                 match = true;
                 break;
             }
         }
 
         if(!match) {
-            fprintf(stderr, "Error: Audio input device '%s' is not a valid audio device. Expected one of:\n", audio_input.name.c_str());
+            fprintf(stderr, "Error: Audio input device '%s' is not a valid audio device. Expected one of:\n", request_audio_input.name.c_str());
             for(const auto &existing_audio_input : audio_inputs) {
                 fprintf(stderr, "    %s\n", existing_audio_input.name.c_str());
             }
