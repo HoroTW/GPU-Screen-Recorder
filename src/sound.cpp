@@ -257,6 +257,8 @@ static int pa_sound_device_read(pa_handle *p) {
     return success ? 0 : -1;
 }
 
+static uint32_t sound_device_index = 0;
+
 int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int num_channels, unsigned int period_frame_size) {
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
@@ -273,7 +275,8 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
 
     // We want a unique stream name for every device which allows each input to be a different box in pipewire graph software
     char stream_name[1024];
-    snprintf(stream_name, sizeof(stream_name), "gpu-screen-recorder-%s", name);
+    snprintf(stream_name, sizeof(stream_name), "gpu-screen-recorder-%u-%s", sound_device_index, name);
+    ++sound_device_index;
 
     pa_handle *handle = pa_sound_device_new(nullptr, stream_name, name, stream_name, &ss, &buffer_attr, &error);
     if(!handle) {
