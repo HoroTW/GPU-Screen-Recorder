@@ -17,9 +17,9 @@ Using NvFBC (recording the monitor/screen) is not faster than not using NvFBC (r
 # Installation
 If you are running an Arch Linux based distro, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
 If you are running an Ubuntu based distro then run `install_ubuntu.sh` as root: `sudo ./install_ubuntu.sh`.\
-
-On other distros you need to install dependencies manually and run `build.sh`. Dependencies: `libgl (libglvnd), ffmpeg, libx11, libxcomposite, libpulse`. You need to additionally have `cuda` installed when you run `gpu-screen-recorder`.\
-If you use a distro that isn't friendly to nvidia, such as fedora, then you can also install gpu-screen-recorder-gtk with flatpak here: [gpu-screen-recorder-flatpak](https://git.dec05eba.com/gpu-screen-recorder-flatpak/about/).\
+If you are running another distro then you can run `install.sh` as root: `sudo ./install.sh`, but you need to manually install the dependencies, as described below.
+# Dependencies
+`libgl (libglvnd), ffmpeg, libx11, libxcomposite, libpulse`. You need to additionally have `cuda` installed when you run `gpu-screen-recorder`.\
 Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
 
 # How to use

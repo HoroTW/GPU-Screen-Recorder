@@ -20,7 +20,7 @@ libs="$(pkg-config --libs $dependencies) -ldl -pthread -lm"
 g++ -c src/sound.cpp -O2 $includes
 g++ -c src/main.cpp -O2 $includes
 g++ -o gpu-screen-recorder -O2 sound.o main.o -s $libs
-install -Dm755 "gpu-screen-recorder" "/usr/local/bin/gpu-screen-recorder"
+install -Dm755 "gpu-screen-recorder" "/usr/bin/gpu-screen-recorder"
 
 echo "Successfully installed gpu-screen-recorder"
 [ "$cuda_missing" -eq 1 ] && echo "You need to reboot your computer before using gpu-screen-recorder because cuda was installed"
