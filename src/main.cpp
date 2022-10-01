@@ -819,7 +819,7 @@ static void usage() {
     fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. Usually you want to set this to the size of the window. Optional, by default the size of the window (which is passed to -w). This option is only supported when recording a window, not a screen/monitor.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
-    fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. Optional, no audio track is added by default.\n");
+    fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. A name can be given to the audio input device by prefixing the audio input with <name>/, for example \"dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor\". Optional, no audio track is added by default.\n");
     fprintf(stderr, "  -q    Video quality. Should either be 'very_high' or 'ultra'. 'very_high' is the recommended, especially when live streaming or when you have a slower harddrive. Optional, set to 'very_high' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
@@ -907,7 +907,6 @@ struct AudioTrack {
     AVCodecContext *codec_context = nullptr;
     AVFrame *frame = nullptr;
     AVStream *stream = nullptr;
-    const char *input_name = nullptr;
 
     SoundDevice sound_device;
     std::thread thread; // TODO: Instead of having a thread for each track, have one thread for all threads and read the data with non-blocking read
@@ -1033,6 +1032,19 @@ static void save_replay_async(AVCodecContext *video_codec_context, int video_str
     });
 }
 
+static AudioInput parse_audio_input_arg(const char *str) {
+    AudioInput audio_input;
+    audio_input.name = str;
+    const size_t index = audio_input.name.find('/');
+    if(index == std::string::npos) {
+        audio_input.description = "gpu-screen-recorder-" + audio_input.name;
+    } else {
+        audio_input.description = audio_input.name.substr(0, index);
+        audio_input.name.erase(audio_input.name.begin(), audio_input.name.begin() + index + 1);
+    }
+    return audio_input;
+}
+
 int main(int argc, char **argv) {
     signal(SIGTERM, term_handler);
     signal(SIGINT, int_handler);
@@ -1072,23 +1084,28 @@ int main(int argc, char **argv) {
         }
     }
 
-    Arg &audio_input_arg = args["-a"];
+    const Arg &audio_input_arg = args["-a"];
     const std::vector<AudioInput> audio_inputs = get_pulseaudio_inputs();
+
+    std::vector<AudioInput> requested_audio_inputs;
+    for(const char *audio_input : audio_input_arg.values) {
+        requested_audio_inputs.push_back(parse_audio_input_arg(audio_input));
+    }
 
     // Manually check if the audio inputs we give exist. This is only needed for pipewire, not pulseaudio.
     // Pipewire instead DEFAULTS TO THE DEFAULT AUDIO INPUT. THAT'S RETARDED.
     // OH, YOU MISSPELLED THE AUDIO INPUT? FUCK YOU
-    for(const char *audio_input : audio_input_arg.values) {
+    for(const AudioInput &audio_input : requested_audio_inputs) {
         bool match = false;
         for(const auto &existing_audio_input : audio_inputs) {
-            if(strcmp(audio_input, existing_audio_input.name.c_str()) == 0) {
+            if(strcmp(audio_input.name.c_str(), existing_audio_input.name.c_str()) == 0) {
                 match = true;
                 break;
             }
         }
 
         if(!match) {
-            fprintf(stderr, "Error: Audio input device '%s' is not a valid input device. Expected one of:\n", audio_input);
+            fprintf(stderr, "Error: Audio input device '%s' is not a valid audio device. Expected one of:\n", audio_input.name.c_str());
             for(const auto &existing_audio_input : audio_inputs) {
                 fprintf(stderr, "    %s\n", existing_audio_input.name.c_str());
             }
@@ -1349,7 +1366,7 @@ int main(int argc, char **argv) {
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
     int audio_stream_index = VIDEO_STREAM_INDEX + 1;
-    for(const char *audio_input : audio_input_arg.values) {
+    for(const AudioInput &audio_input : requested_audio_inputs) {
         AVCodecContext *audio_codec_context = create_audio_codec_context(av_format_context, fps);
 
         AVStream *audio_stream = nullptr;
@@ -1360,7 +1377,7 @@ int main(int argc, char **argv) {
         if(audio_stream)
             avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
 
-        audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, audio_input, {}, {}, audio_stream_index });
+        audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, {}, {}, audio_stream_index });
 
 #if LIBAVCODEC_VERSION_MAJOR < 60
         const int num_channels = audio_codec_context->channels;
@@ -1368,7 +1385,7 @@ int main(int argc, char **argv) {
         const int num_channels = audio_codec_context->ch_layout.nb_channels;
 #endif
 
-        if(sound_device_get_by_name(&audio_tracks.back().sound_device, audio_tracks.back().input_name, num_channels, audio_codec_context->frame_size) != 0) {
+        if(sound_device_get_by_name(&audio_tracks.back().sound_device, audio_input.name.c_str(), audio_input.description.c_str(), num_channels, audio_codec_context->frame_size) != 0) {
             fprintf(stderr, "failed to get 'pulse' sound device\n");
             exit(1);
         }

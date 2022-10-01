@@ -37,7 +37,7 @@ struct AudioInput {
     to clean up internal resources.
     Returns 0 on success, or a negative value on failure.
 */
-int sound_device_get_by_name(SoundDevice *device, const char *name = "default", unsigned int num_channels = 2, unsigned int period_frame_size = 32);
+int sound_device_get_by_name(SoundDevice *device, const char *device_name, const char *description, unsigned int num_channels, unsigned int period_frame_size);
 
 void sound_device_close(SoundDevice *device);
 

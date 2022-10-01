@@ -257,9 +257,7 @@ static int pa_sound_device_read(pa_handle *p) {
     return success ? 0 : -1;
 }
 
-static uint32_t sound_device_index = 0;
-
-int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int num_channels, unsigned int period_frame_size) {
+int sound_device_get_by_name(SoundDevice *device, const char *device_name, const char *description, unsigned int num_channels, unsigned int period_frame_size) {
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
     ss.rate = 48000;
@@ -273,14 +271,9 @@ int sound_device_get_by_name(SoundDevice *device, const char *name, unsigned int
     buffer_attr.maxlength = period_frame_size * 2 * num_channels; // 2 bytes/sample, @num_channels channels
     buffer_attr.fragsize = buffer_attr.maxlength;
 
-    // We want a unique stream name for every device which allows each input to be a different box in pipewire graph software
-    char stream_name[1024];
-    snprintf(stream_name, sizeof(stream_name), "gpu-screen-recorder-%u-%s", sound_device_index, name);
-    ++sound_device_index;
-
-    pa_handle *handle = pa_sound_device_new(nullptr, stream_name, name, stream_name, &ss, &buffer_attr, &error);
+    pa_handle *handle = pa_sound_device_new(nullptr, description, device_name, description, &ss, &buffer_attr, &error);
     if(!handle) {
-        fprintf(stderr, "pa_sound_device_new() failed: %s. Audio input device %s might not be valid\n", pa_strerror(error), name);
+        fprintf(stderr, "pa_sound_device_new() failed: %s. Audio input device %s might not be valid\n", pa_strerror(error), description);
         return -1;
     }
 
