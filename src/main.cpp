@@ -624,8 +624,8 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->sample_aspect_ratio.num = 0;
     codec_context->sample_aspect_ratio.den = 0;
     // High values reeduce file size but increases time it takes to seek
-    codec_context->gop_size = fps * 10;
-    codec_context->keyint_min = fps * 10;
+    codec_context->gop_size = fps * 20;
+    //codec_context->keyint_min = fps * 20;
     codec_context->max_b_frames = 0;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
