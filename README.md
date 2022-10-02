@@ -7,17 +7,19 @@ where only the last few seconds are saved.
 
 ## Note
 For NvFBC to work with PRIME, you must set the primary GPU to your dedicated Nvidia graphics card. On Pop OS, you can select the 'NVIDIA Graphics' option in the power menu, or on Arch Linux you can use Optimus Manager.\
-If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.\
+If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.
 
 # Performance
 When recording Legend of Zelda Breath of the Wild at 4k, fps drops from 30 to 7 when using OBS Studio + nvenc, however when using this screen recorder the fps remains at 30.\
 When recording GTA V at 4k on highest settings, fps drops from 60 to 23 when using obs-nvfbc + nvenc, however when using this screen recorder the fps only drops to 55. The quality is also much better when using gpu-screen-recorder.\
 It is recommended to save the video to a SSD because of the large file size, which a slow HDD might not be fast enough to handle.\
 Using NvFBC (recording the monitor/screen) is not faster than not using NvFBC (recording a single window) with gpu screen recorder, in fact it might be a tiny bit slower.
+
 # Installation
 If you are running an Arch Linux based distro, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
 If you are running an Ubuntu based distro then run `install_ubuntu.sh` as root: `sudo ./install_ubuntu.sh`.\
 If you are running another distro then you can run `install.sh` as root: `sudo ./install.sh`, but you need to manually install the dependencies, as described below.
+
 # Dependencies
 `libgl (libglvnd), ffmpeg, libx11, libxcomposite, libpulse`. You need to additionally have `cuda` installed when you run `gpu-screen-recorder`.\
 Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.

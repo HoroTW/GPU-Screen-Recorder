@@ -623,15 +623,18 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->framerate.den = 1;
     codec_context->sample_aspect_ratio.num = 0;
     codec_context->sample_aspect_ratio.den = 0;
-    codec_context->gop_size = fps * 2;
+    // High values reeduce file size but increases time it takes to seek
+    codec_context->gop_size = fps * 10;
+    codec_context->keyint_min = fps * 10;
     codec_context->max_b_frames = 0;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
-    //if(use_hevc)
-    //    codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
+    if(use_hevc)
+        codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
         case VideoQuality::VERY_HIGH:
-	        codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
+            codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
+            /*
             if(use_hevc) {
                 codec_context->qmin = 20;
                 codec_context->qmax = 35;
@@ -639,12 +642,14 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
                 codec_context->qmin = 5;
                 codec_context->qmax = 20;
             }
+            */
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
             //av_opt_set(codec_context->priv_data, "preset", "p4", 0);
             break;
         case VideoQuality::ULTRA:
+        /*
             if(use_hevc) {
                 codec_context->qmin = 17;
                 codec_context->qmax = 30;
@@ -652,12 +657,14 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
                 codec_context->qmin = 5;
                 codec_context->qmax = 15;
             }
+            */
             //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
             //av_opt_set(codec_context->priv_data, "profile", "high", 0);
             //codec_context->profile = FF_PROFILE_H264_HIGH;
             //av_opt_set(codec_context->priv_data, "preset", "p5", 0);
             break;
     }
+    //codec_context->profile = FF_PROFILE_H264_MAIN;
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
         codec_context->mb_decision = 2;
 
@@ -731,7 +738,7 @@ static AVBufferRef* dummy_hw_frame_init(size_t size) {
 
 static void open_video(AVCodecContext *codec_context,
                        WindowPixmap &window_pixmap, AVBufferRef **device_ctx,
-                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context, bool use_nvfbc) {
+                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context, bool use_nvfbc, VideoQuality video_quality) {
     int ret;
 
     *device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
@@ -777,7 +784,19 @@ static void open_video(AVCodecContext *codec_context,
     codec_context->hw_device_ctx = *device_ctx;
     codec_context->hw_frames_ctx = frame_context;
 
-    ret = avcodec_open2(codec_context, codec_context->codec, nullptr);
+    AVDictionary *options = nullptr;
+    switch(video_quality) {
+        case VideoQuality::VERY_HIGH:
+	        av_dict_set_int(&options, "qp", 28, 0);
+            //av_dict_set(&options, "preset", "hq", 0);
+            break;
+        case VideoQuality::ULTRA:
+            av_dict_set_int(&options, "qp", 18, 0);
+            //av_dict_set(&options, "preset", "slow", 0);
+            break;
+    }
+
+    ret = avcodec_open2(codec_context, codec_context->codec, &options);
     if (ret < 0) {
         fprintf(stderr, "Error: Could not open video codec: %s\n",
                 "blabla"); // av_err2str(ret));
@@ -1361,7 +1380,7 @@ int main(int argc, char **argv) {
 
     AVBufferRef *device_ctx;
     CUgraphicsResource cuda_graphics_resource;
-    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx, !src_window_id);
+    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx, !src_window_id, quality);
     if(video_stream)
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
