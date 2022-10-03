@@ -53,6 +53,6 @@ FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to
 libraries at compile-time.
 * Clean up the code!
 * Dynamically change bitrate/resolution to match desired fps. This would be helpful when streaming for example, where the encode output speed also depends on upload speed to the streaming service.
-* Show cursor when recording. Currently the cursor is not visible when recording a window and it's disabled when recording screen-direct to allow direct nvfbc capture for fullscreen windows, which allows for better performance and variable refresh rate monitors to work.
+* Show cursor when recording. Currently the cursor is not visible when recording a window.
 * Implement opengl injection to capture texture. This fixes composition issues and (VRR) without having to use NvFBC direct capture.
 * Always use direct capture with NvFBC once the capture issue in mpv fullscreen has been resolved (maybe detect if direct capture fails in nvfbc and switch to non-direct recording. NvFBC says if direct capture fails).

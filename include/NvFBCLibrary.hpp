@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <string.h>
 #include <stdio.h>
+#include <string.h>
 
 class NvFBCLibrary {
 public:
@@ -55,7 +56,7 @@ public:
         return true;
     }
 
-    // If |display_to_capture| is "screen", then the entire x11 screen is captured (all displays)
+    // If |display_to_capture| is "screen", then the entire x11 screen is captured (all displays).
     bool create(const char *display_to_capture, uint32_t fps, /*out*/ uint32_t *display_width, /*out*/ uint32_t *display_height, uint32_t x = 0, uint32_t y = 0, uint32_t width = 0, uint32_t height = 0, bool direct_capture = false) {
         if(!library || !display_to_capture || !display_width || !display_height || fbc_handle_created)
             return false;
@@ -120,7 +121,7 @@ public:
         memset(&create_capture_params, 0, sizeof(create_capture_params));
         create_capture_params.dwVersion = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER;
         create_capture_params.eCaptureType = NVFBC_CAPTURE_SHARED_CUDA;
-        create_capture_params.bWithCursor = direct_capture ? NVFBC_FALSE : NVFBC_TRUE;
+        create_capture_params.bWithCursor = (!direct_capture || driver_supports_direct_capture_cursor()) ? NVFBC_TRUE : NVFBC_FALSE;
         if(capture_region) {
             create_capture_params.captureBox = { x, y, width, height };
             *display_width = width;
@@ -221,7 +222,7 @@ private:
     }
 
     // Returns 0 on failure
-    uint32_t get_output_id_from_display_name(NVFBC_RANDR_OUTPUT_INFO *outputs, uint32_t num_outputs, const char *display_name, uint32_t *display_width, uint32_t *display_height) {
+    static uint32_t get_output_id_from_display_name(NVFBC_RANDR_OUTPUT_INFO *outputs, uint32_t num_outputs, const char *display_name, uint32_t *display_width, uint32_t *display_height) {
         if(!outputs)
             return 0;
 
@@ -234,6 +235,31 @@ private:
         }
 
         return 0;
+    }
+
+    // TODO: Test with optimus and open kernel modules
+    static bool driver_supports_direct_capture_cursor() {
+        FILE *f = fopen("/proc/driver/nvidia/version", "rb");
+        if(!f)
+            return false;
+
+        char buffer[2048];
+        size_t bytes_read = fread(buffer, 1, sizeof(buffer) - 1, f);
+        buffer[bytes_read] = '\0';
+
+        bool supports_cursor = false;
+        const char *p = strstr(buffer, "Kernel Module");
+        if(p) {
+            p += 13;
+            int driver_major_version = 0, driver_minor_version = 0;
+            if(sscanf(p, "%d.%d", &driver_major_version, &driver_minor_version) == 2) {
+                if(driver_major_version > 515 || (driver_major_version == 515 && driver_minor_version >= 57))
+                    supports_cursor = true;
+            }
+        }
+
+        fclose(f);
+        return supports_cursor;
     }
 private:
     void *library = nullptr;
