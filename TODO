@@ -3,7 +3,6 @@ Only add window to list if its the window is a topmost window.
 Track window damages and only update then. That is better for output file size.
 Getting the texture of a window when using a compositor is an nvidia specific limitation. When gpu-screen-recorder supports other gpus then this can be ignored.
 Quickly changing workspace and back while recording under i3 breaks the screen recorder. i3 probably unmaps windows in other workspaces.
-Nvidia 515.57 supports nvfbc direct capture with mouse capture. Check if driver is equal or newer than this and use mouse capture in such situations (with direct capture) supports nvfbc direct capture with mouse capture.
 See https://trac.ffmpeg.org/wiki/EncodingForStreamingSites for optimizing streaming.
 Add option to merge audio tracks into one (muxing?) by adding multiple audio streams in one -a arg separated by comma.
 Look at VK_EXT_external_memory_dma_buf.

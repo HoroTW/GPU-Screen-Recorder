@@ -101,6 +101,11 @@ enum class VideoQuality {
     ULTRA
 };
 
+enum class VideoCodec {
+    H264,
+    H265
+};
+
 static double clock_get_monotonic_seconds() {
     struct timespec ts;
     ts.tv_sec = 0;
@@ -592,15 +597,15 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
 static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_context, 
                             VideoQuality video_quality,
                             int record_width, int record_height,
-                            int fps, bool use_hevc) {
-    const AVCodec *codec = avcodec_find_encoder_by_name(use_hevc ? "hevc_nvenc" : "h264_nvenc");
+                            int fps, VideoCodec video_codec) {
+    const AVCodec *codec = avcodec_find_encoder_by_name(video_codec == VideoCodec::H265 ? "hevc_nvenc" : "h264_nvenc");
     if (!codec) {
-        codec = avcodec_find_encoder_by_name(use_hevc ? "nvenc_hevc" : "nvenc_h264");
+        codec = avcodec_find_encoder_by_name(video_codec == VideoCodec::H265 ? "nvenc_hevc" : "nvenc_h264");
     }
     if (!codec) {
         fprintf(
             stderr,
-            "Error: Could not find %s encoder\n", use_hevc ? "hevc" : "h264");
+            "Error: Could not find %s encoder\n", video_codec == VideoCodec::H265 ? "hevc" : "h264");
         exit(1);
     }
 
@@ -629,7 +634,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->max_b_frames = 0;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
-    if(use_hevc)
+    if(video_codec == VideoCodec::H265)
         codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
         case VideoQuality::VERY_HIGH:
@@ -839,10 +844,11 @@ static void usage() {
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. A name can be given to the audio input device by prefixing the audio input with <name>/, for example \"dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor\". Optional, no audio track is added by default.\n");
-    fprintf(stderr, "  -q    Video quality. Should either be 'very_high' or 'ultra'. 'very_high' is the recommended, especially when live streaming or when you have a slower harddrive. Optional, set to 'very_high' be default.\n");
+    fprintf(stderr, "  -q    Video quality. Should be either 'very_high' or 'ultra'. 'very_high' is the recommended, especially when live streaming or when you have a slower harddrive. Optional, set to 'very_high' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
+    fprintf(stderr, "  -k    Codec to use. Should be either 'h264' or 'h265'. Defaults to 'h264' unless recording at a higher resolution than 3840x2160. Forcefully set to 'h264' if -c is 'flv.\n");
     fprintf(stderr, "  -o    The output file path. If omitted then the encoded data is sent to stdout. Required in replay mode (when using -r). In replay mode this has to be an existing directory instead of a file.\n");
     fprintf(stderr, "NOTES:\n");
     fprintf(stderr, "  Send signal SIGINT (Ctrl+C) to gpu-screen-recorder to stop and save the recording (when not using replay mode).\n");
@@ -1076,7 +1082,8 @@ int main(int argc, char **argv) {
         { "-a", Arg { {}, true, true } },
         { "-q", Arg { {}, true, false } },
         { "-o", Arg { {}, true, false } },
-        { "-r", Arg { {}, true, false } }
+        { "-r", Arg { {}, true, false } },
+        { "-k", Arg { {}, true, false } }
     };
 
     for(int i = 1; i < argc - 1; i += 2) {
@@ -1097,6 +1104,19 @@ int main(int argc, char **argv) {
     for(auto &it : args) {
         if(!it.second.optional && !it.second.value()) {
             fprintf(stderr, "Missing argument '%s'\n", it.first.c_str());
+            usage();
+        }
+    }
+
+    VideoCodec video_codec;
+    const char *codec_to_use = args["-k"].value();
+    if(codec_to_use) {
+        if(strcmp(codec_to_use, "h264") == 0) {
+            video_codec = VideoCodec::H264;
+        } else if(strcmp(codec_to_use, "h265") == 0) {
+            video_codec = VideoCodec::H265;
+        } else {
+            fprintf(stderr, "Error: -k should either be either 'h264' or 'h265', got: '%s'\n", codec_to_use);
             usage();
         }
     }
@@ -1349,6 +1369,21 @@ int main(int argc, char **argv) {
         window_pixmap.texture_height = window_height;
     }
 
+    if(!codec_to_use) {
+        // h265 generally allows recording at a higher resolution than h264 on nvidia cards. On a gtx 1080 4k is the max resolution for h264 but for h265 it's 8k.
+        // Another important info is that when recording at a higher fps than.. 60? h265 has very bad performance. For example when recording at 144 fps the fps drops to 1
+        // while with h264 the fps doesn't drop.
+        if(window_width > 3840 || window_height > 2160) {
+            fprintf(stderr, "Info: using h265 encoder because a codec was not specified and resolution width is more than 3840 or height is more than 2160\n");
+            codec_to_use = "h265";
+            video_codec = VideoCodec::H265;
+        } else {
+            fprintf(stderr, "Info: using h264 encoder because a codec was not specified\n");
+            codec_to_use = "h264";
+            video_codec = VideoCodec::H264;
+        }
+    }
+
     // Video start
     AVFormatContext *av_format_context;
     // The output format is automatically guessed by the file extension
@@ -1365,16 +1400,15 @@ int main(int argc, char **argv) {
     const AVOutputFormat *output_format = av_format_context->oformat;
 
     //bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
-    bool use_hevc = true;
-    if(use_hevc && strcmp(container_format, "flv") == 0) {
-        use_hevc = false;
-        fprintf(stderr, "Warning: hevc is not compatible with flv, falling back to h264 instead.\n");
+    if(video_codec != VideoCodec::H264 && strcmp(container_format, "flv") == 0) {
+        video_codec = VideoCodec::H264;
+        fprintf(stderr, "Warning: h265 is not compatible with flv, falling back to h264 instead.\n");
     }
 
     AVStream *video_stream = nullptr;
     std::vector<AudioTrack> audio_tracks;
 
-    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, record_width, record_height, fps, use_hevc);
+    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, record_width, record_height, fps, video_codec);
     if(replay_buffer_size_secs == -1)
         video_stream = create_stream(av_format_context, video_codec_context);
 
