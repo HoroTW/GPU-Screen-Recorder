@@ -97,6 +97,8 @@ struct WindowPixmap {
 };
 
 enum class VideoQuality {
+    MEDIUM,
+    HIGH,
     VERY_HIGH,
     ULTRA
 };
@@ -587,9 +589,8 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
     codec_context->framerate.num = fps;
     codec_context->framerate.den = 1;
 
-    // Some formats want stream headers to be seperate
-    if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
-        av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    codec_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
     return codec_context;
 }
@@ -597,7 +598,7 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
 static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_context, 
                             VideoQuality video_quality,
                             int record_width, int record_height,
-                            int fps, VideoCodec video_codec) {
+                            int fps, VideoCodec video_codec, bool is_livestream) {
     const AVCodec *codec = avcodec_find_encoder_by_name(video_codec == VideoCodec::H265 ? "hevc_nvenc" : "h264_nvenc");
     if (!codec) {
         codec = avcodec_find_encoder_by_name(video_codec == VideoCodec::H265 ? "nvenc_hevc" : "nvenc_h264");
@@ -617,7 +618,6 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->codec_id = codec->id;
     codec_context->width = record_width & ~1;
     codec_context->height = record_height & ~1;
-	codec_context->bit_rate = 12500000 + (codec_context->width * codec_context->height) / 2;
     // Timebase: This is the fundamental unit of time (in seconds) in terms
     // of which frame timestamps are represented. For fixed-fps content,
     // timebase should be 1/framerate and timestamp increments should be
@@ -629,16 +629,23 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->sample_aspect_ratio.num = 0;
     codec_context->sample_aspect_ratio.den = 0;
     // High values reeduce file size but increases time it takes to seek
-    codec_context->gop_size = fps * 2;
-    //codec_context->keyint_min = fps * 20;
+    if(is_livestream) {
+        codec_context->flags |= (AV_CODEC_FLAG_CLOSED_GOP | AV_CODEC_FLAG_LOW_DELAY);
+        codec_context->flags2 |= AV_CODEC_FLAG2_FAST;
+        codec_context->gop_size = fps * 2;
+        //codec_context->gop_size = std::numeric_limits<int>::max();
+        //codec_context->keyint_min = std::numeric_limits<int>::max();
+    } else {
+        codec_context->gop_size = fps * 2;
+    }
     codec_context->max_b_frames = 0;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
     if(video_codec == VideoCodec::H265)
         codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
-        case VideoQuality::VERY_HIGH:
-            codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
+        case VideoQuality::MEDIUM:
+            codec_context->bit_rate = 5000000 + (codec_context->width * codec_context->height) / 2;
             /*
             if(use_hevc) {
                 codec_context->qmin = 20;
@@ -653,20 +660,14 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
             //codec_context->profile = FF_PROFILE_H264_HIGH;
             //av_opt_set(codec_context->priv_data, "preset", "p4", 0);
             break;
+        case VideoQuality::HIGH:
+            codec_context->bit_rate = 8000000 + (codec_context->width * codec_context->height) / 2;
+            break;
+        case VideoQuality::VERY_HIGH:
+            codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
+            break;
         case VideoQuality::ULTRA:
-        /*
-            if(use_hevc) {
-                codec_context->qmin = 17;
-                codec_context->qmax = 30;
-            } else {
-                codec_context->qmin = 5;
-                codec_context->qmax = 15;
-            }
-            */
-            //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
-            //av_opt_set(codec_context->priv_data, "profile", "high", 0);
-            //codec_context->profile = FF_PROFILE_H264_HIGH;
-            //av_opt_set(codec_context->priv_data, "preset", "p5", 0);
+            codec_context->bit_rate = 12500000 + (codec_context->width * codec_context->height) / 2;
             break;
     }
     //codec_context->profile = FF_PROFILE_H264_MAIN;
@@ -692,9 +693,12 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->bit_rate = 0;
     #endif
 
-    // Some formats want stream headers to be seperate
-    if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
-        av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    codec_context->rc_max_rate = codec_context->bit_rate;
+    codec_context->rc_min_rate = codec_context->bit_rate;
+    codec_context->rc_buffer_size = codec_context->bit_rate / 10;
+
+    av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    codec_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
     return codec_context;
 }
@@ -743,7 +747,7 @@ static AVBufferRef* dummy_hw_frame_init(size_t size) {
 
 static void open_video(AVCodecContext *codec_context,
                        WindowPixmap &window_pixmap, AVBufferRef **device_ctx,
-                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context, bool use_nvfbc, VideoQuality video_quality) {
+                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context, bool use_nvfbc, VideoQuality video_quality, bool is_livestream) {
     int ret;
 
     *device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
@@ -791,6 +795,14 @@ static void open_video(AVCodecContext *codec_context,
 
     AVDictionary *options = nullptr;
     switch(video_quality) {
+        case VideoQuality::MEDIUM:
+	        av_dict_set_int(&options, "qp", 36, 0);
+            //av_dict_set(&options, "preset", "hq", 0);
+            break;
+        case VideoQuality::HIGH:
+	        av_dict_set_int(&options, "qp", 31, 0);
+            //av_dict_set(&options, "preset", "hq", 0);
+            break;
         case VideoQuality::VERY_HIGH:
 	        av_dict_set_int(&options, "qp", 28, 0);
             //av_dict_set(&options, "preset", "hq", 0);
@@ -800,6 +812,13 @@ static void open_video(AVCodecContext *codec_context,
             //av_dict_set(&options, "preset", "slow", 0);
             break;
     }
+
+    if(is_livestream) {
+        av_dict_set_int(&options, "zerolatency", 1, 0);
+        av_dict_set(&options, "preset", "llhq", 0);
+    }
+
+    av_opt_set(&options, "rc", "vbr", 0);
 
     ret = avcodec_open2(codec_context, codec_context->codec, &options);
     if (ret < 0) {
@@ -844,7 +863,7 @@ static void usage() {
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. A name can be given to the audio input device by prefixing the audio input with <name>/, for example \"dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor\". Optional, no audio track is added by default.\n");
-    fprintf(stderr, "  -q    Video quality. Should be either 'very_high' or 'ultra'. 'very_high' is the recommended, especially when live streaming or when you have a slower harddrive. Optional, set to 'very_high' be default.\n");
+    fprintf(stderr, "  -q    Video quality. Should be either 'medium', 'high', 'very_high' or 'ultra'. 'high' is the recommended option when live streaming or when you have a slower harddrive. Optional, set to 'very_high' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
@@ -993,8 +1012,7 @@ static void save_replay_async(AVCodecContext *video_codec_context, int video_str
         avformat_alloc_output_context2(&av_format_context, nullptr, container_format.c_str(), nullptr);
 
         av_format_context->flags |= AVFMT_FLAG_GENPTS;
-        if (av_format_context->oformat->flags & AVFMT_GLOBALHEADER)
-            av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
         AVStream *video_stream = create_stream(av_format_context, video_codec_context);
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
@@ -1066,6 +1084,17 @@ static AudioInput parse_audio_input_arg(const char *str) {
         audio_input.name.erase(audio_input.name.begin(), audio_input.name.begin() + index + 1);
     }
     return audio_input;
+}
+
+// TODO: Does this match all livestreaming cases?
+static bool is_livestream_path(const char *str) {
+    const int len = strlen(str);
+    if((len >= 7 && memcmp(str, "http://", 7) == 0) || (len >= 8 && memcmp(str, "https://", 8) == 0))
+        return true;
+    else if((len >= 7 && memcmp(str, "rtmp://", 7) == 0) || (len >= 8 && memcmp(str, "rtmps://", 8) == 0))
+        return true;
+    else
+        return false;
 }
 
 int main(int argc, char **argv) {
@@ -1181,14 +1210,17 @@ int main(int argc, char **argv) {
     if(!quality_str)
         quality_str = "very_high";
 
-    // medium and high exist for backwards compatibility
     VideoQuality quality;
-    if(strcmp(quality_str, "medium") == 0 || strcmp(quality_str, "very_high") == 0) {
+    if(strcmp(quality_str, "medium") == 0) {
+        quality = VideoQuality::MEDIUM;
+    } else if(strcmp(quality_str, "high") == 0) {
+        quality = VideoQuality::HIGH;
+    } else if(strcmp(quality_str, "very_high") == 0) {
         quality = VideoQuality::VERY_HIGH;
-    } else if(strcmp(quality_str, "high") == 0 || strcmp(quality_str, "ultra") == 0) {
+    } else if(strcmp(quality_str, "ultra") == 0) {
         quality = VideoQuality::ULTRA;
     } else {
-        fprintf(stderr, "Error: -q should either be either 'very_high' or 'ultra', got: '%s'\n", quality_str);
+        fprintf(stderr, "Error: -q should either be either 'medium', 'high', 'very_high' or 'ultra', got: '%s'\n", quality_str);
         usage();
     }
 
@@ -1399,6 +1431,8 @@ int main(int argc, char **argv) {
     av_format_context->flags |= AVFMT_FLAG_GENPTS;
     const AVOutputFormat *output_format = av_format_context->oformat;
 
+    const bool is_livestream = is_livestream_path(filename);
+
     //bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
     if(video_codec != VideoCodec::H264 && strcmp(container_format, "flv") == 0) {
         video_codec = VideoCodec::H264;
@@ -1408,13 +1442,13 @@ int main(int argc, char **argv) {
     AVStream *video_stream = nullptr;
     std::vector<AudioTrack> audio_tracks;
 
-    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, record_width, record_height, fps, video_codec);
+    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, record_width, record_height, fps, video_codec, is_livestream);
     if(replay_buffer_size_secs == -1)
         video_stream = create_stream(av_format_context, video_codec_context);
 
     AVBufferRef *device_ctx;
     CUgraphicsResource cuda_graphics_resource;
-    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx, !src_window_id, quality);
+    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx, !src_window_id, quality, is_livestream);
     if(video_stream)
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
