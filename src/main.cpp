@@ -645,7 +645,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
         codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
         case VideoQuality::MEDIUM:
-            codec_context->bit_rate = 5000000 + (codec_context->width * codec_context->height) / 2;
+            codec_context->bit_rate = 6000000 + (codec_context->width * codec_context->height) / 2;
             /*
             if(use_hevc) {
                 codec_context->qmin = 20;
@@ -796,7 +796,7 @@ static void open_video(AVCodecContext *codec_context,
     AVDictionary *options = nullptr;
     switch(video_quality) {
         case VideoQuality::MEDIUM:
-	        av_dict_set_int(&options, "qp", 36, 0);
+	        av_dict_set_int(&options, "qp", 35, 0);
             //av_dict_set(&options, "preset", "hq", 0);
             break;
         case VideoQuality::HIGH:
@@ -815,7 +815,7 @@ static void open_video(AVCodecContext *codec_context,
 
     if(is_livestream) {
         av_dict_set_int(&options, "zerolatency", 1, 0);
-        av_dict_set(&options, "preset", "llhq", 0);
+        //av_dict_set(&options, "preset", "llhq", 0);
     }
 
     av_opt_set(&options, "rc", "vbr", 0);
@@ -1432,6 +1432,12 @@ int main(int argc, char **argv) {
     const AVOutputFormat *output_format = av_format_context->oformat;
 
     const bool is_livestream = is_livestream_path(filename);
+    // (Some?) livestreaming services require at least one audio track to work.
+    // If not audio is provided then create one silent audio track.
+    if(is_livestream && requested_audio_inputs.empty()) {
+        fprintf(stderr, "Info: live streaming but no audio track was added. Adding a silent audio track\n");
+        requested_audio_inputs.push_back({ "", "gsr-silent" });
+    }
 
     //bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
     if(video_codec != VideoCodec::H264 && strcmp(container_format, "flv") == 0) {
@@ -1472,9 +1478,14 @@ int main(int argc, char **argv) {
         const int num_channels = audio_codec_context->ch_layout.nb_channels;
 #endif
 
-        if(sound_device_get_by_name(&audio_tracks.back().sound_device, audio_input.name.c_str(), audio_input.description.c_str(), num_channels, audio_codec_context->frame_size) != 0) {
-            fprintf(stderr, "failed to get 'pulse' sound device\n");
-            exit(1);
+        if(audio_input.name.empty()) {
+            audio_tracks.back().sound_device.handle = NULL;
+            audio_tracks.back().sound_device.frames = 0;
+        } else {
+            if(sound_device_get_by_name(&audio_tracks.back().sound_device, audio_input.name.c_str(), audio_input.description.c_str(), num_channels, audio_codec_context->frame_size) != 0) {
+                fprintf(stderr, "failed to get 'pulse' sound device\n");
+                exit(1);
+            }
         }
 
         ++audio_stream_index;
@@ -1609,10 +1620,13 @@ int main(int argc, char **argv) {
             int64_t pts = 0;
             const double target_audio_hz = 1.0 / (double)audio_track.codec_context->sample_rate;
             double received_audio_time = clock_get_monotonic_seconds();
+            const int64_t timeout_ms = std::round((1000.0 / (double)audio_track.codec_context->sample_rate) * 1000.0);
 
             while(running) {
                 void *sound_buffer;
-                int sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
+                int sound_buffer_size = -1;
+                if(audio_track.sound_device.handle)
+                    sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
                 const bool got_audio_data = sound_buffer_size >= 0;
 
                 const double this_audio_frame_time = clock_get_monotonic_seconds();
@@ -1645,6 +1659,23 @@ int main(int argc, char **argv) {
                             fprintf(stderr, "Failed to encode audio!\n");
                         }
                     }
+                }
+
+                if(!audio_track.sound_device.handle) {
+                    // TODO:
+                    //audio_track.frame->data[0] = empty_audio;
+                    received_audio_time = this_audio_frame_time;
+                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.codec_context->frame_size);
+                    audio_track.frame->pts = pts;
+                    pts += audio_track.frame->nb_samples;
+                    ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
+                    if(ret >= 0){
+                        receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
+                    } else {
+                        fprintf(stderr, "Failed to encode audio!\n");
+                    }
+
+                    usleep(timeout_ms * 1000);
                 }
 
                 if(got_audio_data) {

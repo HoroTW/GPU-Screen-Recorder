@@ -283,7 +283,9 @@ int sound_device_get_by_name(SoundDevice *device, const char *device_name, const
 }
 
 void sound_device_close(SoundDevice *device) {
-    pa_sound_device_free((pa_handle*)device->handle);
+    if(device->handle)
+        pa_sound_device_free((pa_handle*)device->handle);
+    device->handle = NULL;
 }
 
 int sound_device_read_next_chunk(SoundDevice *device, void **buffer) {
