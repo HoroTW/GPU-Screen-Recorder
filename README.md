@@ -21,7 +21,7 @@ Using NvFBC (recording the monitor/screen) is not faster than not using NvFBC (r
 If you are running an Arch Linux based distro, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
 If you are running an Ubuntu based distro then run `install_ubuntu.sh` as root: `sudo ./install_ubuntu.sh`.\
 If you are running another distro then you can run `install.sh` as root: `sudo ./install.sh`, but you need to manually install the dependencies, as described below.\
-You can also install gpu screen recorder ([the gtk gui version](https://git.dec05eba.com/gpu-screen-recorder-gtk/)) from flathub: https://flathub.org/apps/details/com.dec05eba.gpu_screen_recorder.
+You can also install gpu screen recorder ([the gtk gui version](https://git.dec05eba.com/gpu-screen-recorder-gtk/)) from [flathub](https://flathub.org/apps/details/com.dec05eba.gpu_screen_recorder).
 
 # Dependencies
 `libgl (libglvnd), ffmpeg, libx11, libxcomposite, libpulse`. You need to additionally have `cuda` installed when you run `gpu-screen-recorder`.\
