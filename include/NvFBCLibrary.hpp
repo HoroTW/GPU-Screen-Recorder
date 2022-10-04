@@ -75,8 +75,16 @@ public:
 
         status = nv_fbc_function_list.nvFBCCreateHandle(&nv_fbc_handle, &create_params);
         if(status != NVFBC_SUCCESS) {
-            fprintf(stderr, "Error: %s\n", nv_fbc_function_list.nvFBCGetLastErrorStr(nv_fbc_handle));
-            return false;
+            // Reverse engineering for interoperability
+            const uint8_t enable_key[] = { 0xac, 0x10, 0xc9, 0x2e, 0xa5, 0xe6, 0x87, 0x4f, 0x8f, 0x4b, 0xf4, 0x61, 0xf8, 0x56, 0x27, 0xe9 };
+            create_params.privateData = enable_key;
+            create_params.privateDataSize = 16;
+
+            status = nv_fbc_function_list.nvFBCCreateHandle(&nv_fbc_handle, &create_params);
+            if(status != NVFBC_SUCCESS) {
+                fprintf(stderr, "Error: %s\n", nv_fbc_function_list.nvFBCGetLastErrorStr(nv_fbc_handle));
+                return false;
+            }
         }
         fbc_handle_created = true;
 
