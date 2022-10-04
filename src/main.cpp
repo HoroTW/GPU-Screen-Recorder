@@ -632,8 +632,9 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     if(is_livestream) {
         codec_context->flags |= (AV_CODEC_FLAG_CLOSED_GOP | AV_CODEC_FLAG_LOW_DELAY);
         codec_context->flags2 |= AV_CODEC_FLAG2_FAST;
-        codec_context->gop_size = std::numeric_limits<int>::max();
-        codec_context->keyint_min = std::numeric_limits<int>::max();
+        //codec_context->gop_size = std::numeric_limits<int>::max();
+        //codec_context->keyint_min = std::numeric_limits<int>::max();
+        codec_context->gop_size = fps * 2;
     } else {
         codec_context->gop_size = fps * 2;
     }
@@ -644,7 +645,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
         codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
         case VideoQuality::MEDIUM:
-            codec_context->bit_rate = 6000000 + (codec_context->width * codec_context->height) / 2;
+            codec_context->bit_rate = 4500000 + (codec_context->width * codec_context->height) / 2;
             /*
             if(use_hevc) {
                 codec_context->qmin = 20;
