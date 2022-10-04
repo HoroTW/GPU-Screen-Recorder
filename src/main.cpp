@@ -632,9 +632,8 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     if(is_livestream) {
         codec_context->flags |= (AV_CODEC_FLAG_CLOSED_GOP | AV_CODEC_FLAG_LOW_DELAY);
         codec_context->flags2 |= AV_CODEC_FLAG2_FAST;
-        codec_context->gop_size = fps * 2;
-        //codec_context->gop_size = std::numeric_limits<int>::max();
-        //codec_context->keyint_min = std::numeric_limits<int>::max();
+        codec_context->gop_size = std::numeric_limits<int>::max();
+        codec_context->keyint_min = std::numeric_limits<int>::max();
     } else {
         codec_context->gop_size = fps * 2;
     }
@@ -1296,9 +1295,13 @@ int main(int argc, char **argv) {
             return 1;
 
         const char *capture_target = window_str;
-        const bool direct_capture = strcmp(window_str, "screen-direct") == 0;
-        if(direct_capture)
+        bool direct_capture = strcmp(window_str, "screen-direct") == 0;
+        if(direct_capture) {
             capture_target = "screen";
+            // TODO: Temporary disable direct capture because push model causes stuttering when it's direct capturing. This might be a nvfbc bug. This does not happen when using a compositor.
+            direct_capture = false;
+            fprintf(stderr, "Warning: screen-direct has temporary been disabled as it causes stuttering. This is likely a NvFBC bug. Falling back to \"screen\".\n");
+        }
 
         if(!nv_fbc_library.create(capture_target, fps, &window_width, &window_height, region_x, region_y, region_width, region_height, direct_capture))
             return 1;
