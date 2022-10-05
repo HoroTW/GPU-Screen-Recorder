@@ -6,6 +6,7 @@ This screen recorder can be used for recording your desktop offline, for live st
 where only the last few seconds are saved.
 
 ## Note
+Recording a window doesn't work when using picom in glx mode. However it works in xrender mode or when recording the a monitor/screen (which uses NvFBC).\
 For NvFBC to work with PRIME, you must set the primary GPU to your dedicated Nvidia graphics card. On Pop OS, you can select the 'NVIDIA Graphics' option in the power menu, or on Arch Linux you can use Optimus Manager.\
 If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.
 ### TEMPORARY ISSUE ###
