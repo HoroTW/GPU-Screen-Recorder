@@ -956,6 +956,7 @@ struct AudioTrack {
     std::thread thread; // TODO: Instead of having a thread for each track, have one thread for all threads and read the data with non-blocking read
 
     int stream_index = 0;
+    AudioInput audio_input;
 };
 
 static std::future<void> save_replay_thread;
@@ -1474,24 +1475,7 @@ int main(int argc, char **argv) {
         if(audio_stream)
             avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
 
-        audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, {}, {}, audio_stream_index });
-
-#if LIBAVCODEC_VERSION_MAJOR < 60
-        const int num_channels = audio_codec_context->channels;
-#else
-        const int num_channels = audio_codec_context->ch_layout.nb_channels;
-#endif
-
-        if(audio_input.name.empty()) {
-            audio_tracks.back().sound_device.handle = NULL;
-            audio_tracks.back().sound_device.frames = 0;
-        } else {
-            if(sound_device_get_by_name(&audio_tracks.back().sound_device, audio_input.name.c_str(), audio_input.description.c_str(), num_channels, audio_codec_context->frame_size) != 0) {
-                fprintf(stderr, "failed to get 'pulse' sound device\n");
-                exit(1);
-            }
-        }
-
+        audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, {}, {}, audio_stream_index, audio_input });
         ++audio_stream_index;
     }
 
@@ -1608,6 +1592,22 @@ int main(int argc, char **argv) {
 
     for(AudioTrack &audio_track : audio_tracks) {
         audio_track.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, &audio_track, empty_audio](AVFormatContext *av_format_context, std::mutex *write_output_mutex) mutable {
+            #if LIBAVCODEC_VERSION_MAJOR < 60
+            const int num_channels = audio_track.codec_context->channels;
+            #else
+            const int num_channels = audio_track.codec_context->ch_layout.nb_channels;
+            #endif
+
+            if(audio_track.audio_input.name.empty()) {
+                audio_track.sound_device.handle = NULL;
+                audio_track.sound_device.frames = 0;
+            } else {
+                if(sound_device_get_by_name(&audio_track.sound_device, audio_track.audio_input.name.c_str(), audio_track.audio_input.description.c_str(), num_channels, audio_track.codec_context->frame_size) != 0) {
+                    fprintf(stderr, "failed to get 'pulse' sound device\n");
+                    exit(1);
+                }
+            }
+
             SwrContext *swr = swr_alloc();
             if(!swr) {
                 fprintf(stderr, "Failed to create SwrContext\n");
