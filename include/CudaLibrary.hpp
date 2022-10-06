@@ -100,9 +100,9 @@ struct Cuda {
             return true;
 
         dlerror(); // clear
-        void *lib = dlopen("libcuda.so", RTLD_LAZY);
+        void *lib = dlopen("libcuda.so.1", RTLD_LAZY);
         if(!lib) {
-            lib = dlopen("libcuda.so.1", RTLD_LAZY);
+            lib = dlopen("libcuda.so", RTLD_LAZY);
             if(!lib) {
                 fprintf(stderr, "Error: failed to load libcuda.so/libcuda.so.1, error: %s\n", dlerror());
                 return false;

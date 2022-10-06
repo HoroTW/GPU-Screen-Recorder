@@ -5,11 +5,8 @@ cd "$script_dir"
 
 [ $(id -u) -ne 0 ] && echo "You need root privileges to run the install script" && exit 1
 
-dpkg -l nvidia-cuda-dev > /dev/null 2>&1
-cuda_missing="$?"
-
 set -e
-apt-get -y install build-essential nvidia-cuda-dev\
+apt-get -y install build-essential\
 	libswresample-dev libavformat-dev libavcodec-dev libavutil-dev\
 	libgl-dev libx11-dev libxcomposite-dev\
 	libpulse-dev
@@ -24,4 +21,3 @@ install -Dm755 "gpu-screen-recorder" "/usr/local/bin/gpu-screen-recorder"
 install -Dm755 "gpu-screen-recorder" "/usr/bin/gpu-screen-recorder"
 
 echo "Successfully installed gpu-screen-recorder"
-[ "$cuda_missing" -eq 1 ] && echo "You need to reboot your computer before using gpu-screen-recorder because cuda was installed"
