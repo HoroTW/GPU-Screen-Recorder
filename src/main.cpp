@@ -818,7 +818,7 @@ static void open_video(AVCodecContext *codec_context,
         //av_dict_set(&options, "preset", "llhq", 0);
     }
 
-    av_opt_set(&options, "rc", "vbr", 0);
+    av_dict_set(&options, "rc", "vbr", 0);
 
     ret = avcodec_open2(codec_context, codec_context->codec, &options);
     if (ret < 0) {
