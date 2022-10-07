@@ -191,51 +191,43 @@ static int pa_sound_device_read(pa_handle *p) {
         if((clock_get_monotonic_seconds() - start_time) * 1000 >= timeout_ms)
             return -1;
 
-        if(p->read_data) {
-            assert(p->output_index == 0);
-            memcpy(p->output_data, (const uint8_t*)p->read_data + p->read_index, p->read_length);
-            p->output_index += p->read_length;
-            p->read_data = NULL;
-            p->read_length = 0;
-            p->read_index = 0;
+        if(!p->read_data) {
+            pa_mainloop_prepare(p->mainloop, 1 * 1000); // 1 ms
+            pa_mainloop_poll(p->mainloop);
+            pa_mainloop_dispatch(p->mainloop);
 
-            if(pa_stream_drop(p->stream) != 0)
+            if(pa_stream_peek(p->stream, &p->read_data, &p->read_length) < 0)
                 goto fail;
-        }
 
-        pa_mainloop_prepare(p->mainloop, 1 * 1000); // 1 ms
-        pa_mainloop_poll(p->mainloop);
-        pa_mainloop_dispatch(p->mainloop);
+            if(!p->read_data && p->read_length == 0)
+                continue;
 
-        if(pa_stream_peek(p->stream, &p->read_data, &p->read_length) < 0)
-            goto fail;
+            if(!p->read_data && p->read_length > 0) {
+                // There is a hole in the stream :( drop it. Maybe we should generate silence instead? TODO
+                if(pa_stream_drop(p->stream) != 0)
+                    goto fail;
+                continue;
+            }
 
-        if(!p->read_data && p->read_length == 0)
-            continue;
+            if(p->read_length <= 0) {
+                p->read_data = NULL;
+                if(pa_stream_drop(p->stream) != 0)
+                    goto fail;
 
-        if(!p->read_data && p->read_length > 0) {
-            // There is a hole in the stream :( drop it. Maybe we should generate silence instead? TODO
-            if(pa_stream_drop(p->stream) != 0)
-                goto fail;
-            continue;
-        }
-
-        if(p->read_length <= 0) {
-            CHECK_DEAD_GOTO(p, rerror, fail);
-            continue;
+                CHECK_DEAD_GOTO(p, rerror, fail);
+                continue;
+            }
         }
 
         const size_t space_free_in_output_buffer = p->output_length - p->output_index;
         if(space_free_in_output_buffer < p->read_length) {
-            assert(p->read_index == 0);
-            memcpy(p->output_data + p->output_index, p->read_data, space_free_in_output_buffer);
+            memcpy(p->output_data + p->output_index, (const uint8_t*)p->read_data + p->read_index, space_free_in_output_buffer);
             p->output_index = 0;
             p->read_index += space_free_in_output_buffer;
             p->read_length -= space_free_in_output_buffer;
             break;
         } else {
-            assert(p->read_index == 0);
-            memcpy(p->output_data + p->output_index, p->read_data, p->read_length);
+            memcpy(p->output_data + p->output_index, (const uint8_t*)p->read_data + p->read_index, p->read_length);
             p->output_index += p->read_length;
             p->read_data = NULL;
             p->read_length = 0;
@@ -359,12 +351,12 @@ std::vector<AudioInput> get_pulseaudio_inputs() {
                 pa_operation_unref(pa_op);
             pa_context_disconnect(ctx);
             pa_context_unref(ctx);
-            pa_mainloop_free(main_loop);
-            return inputs;
+            break;
         }
 
         pa_mainloop_iterate(main_loop, 1, NULL);
     }
 
     pa_mainloop_free(main_loop);
+    return inputs;
 }
