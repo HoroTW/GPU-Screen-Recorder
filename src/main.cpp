@@ -645,7 +645,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
         codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
         case VideoQuality::MEDIUM:
-            codec_context->bit_rate = 4500000 + (codec_context->width * codec_context->height) / 2;
+            codec_context->bit_rate = 6500000 + (codec_context->width * codec_context->height)*0.75;
             /*
             if(use_hevc) {
                 codec_context->qmin = 20;
@@ -661,13 +661,13 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
             //av_opt_set(codec_context->priv_data, "preset", "p4", 0);
             break;
         case VideoQuality::HIGH:
-            codec_context->bit_rate = 8000000 + (codec_context->width * codec_context->height) / 2;
+            codec_context->bit_rate = 10000000-5000000 + (codec_context->width * codec_context->height)*0.75;
             break;
         case VideoQuality::VERY_HIGH:
-            codec_context->bit_rate = 10000000 + (codec_context->width * codec_context->height) / 2;
+            codec_context->bit_rate = 10000000-5000000 + (codec_context->width * codec_context->height)*0.75;
             break;
         case VideoQuality::ULTRA:
-            codec_context->bit_rate = 12500000 + (codec_context->width * codec_context->height) / 2;
+            codec_context->bit_rate = 10000000-5000000 + (codec_context->width * codec_context->height)*0.75;
             break;
     }
     //codec_context->profile = FF_PROFILE_H264_MAIN;
@@ -797,10 +797,11 @@ static void open_video(AVCodecContext *codec_context,
     switch(video_quality) {
         case VideoQuality::MEDIUM:
 	        av_dict_set_int(&options, "qp", 35, 0);
+            av_dict_set(&options, "rc", "vbr", 0);
             //av_dict_set(&options, "preset", "hq", 0);
             break;
         case VideoQuality::HIGH:
-	        av_dict_set_int(&options, "qp", 31, 0);
+	        av_dict_set_int(&options, "qp", 34, 0);
             //av_dict_set(&options, "preset", "hq", 0);
             break;
         case VideoQuality::VERY_HIGH:
@@ -808,7 +809,7 @@ static void open_video(AVCodecContext *codec_context,
             //av_dict_set(&options, "preset", "hq", 0);
             break;
         case VideoQuality::ULTRA:
-            av_dict_set_int(&options, "qp", 18, 0);
+            av_dict_set_int(&options, "qp", 22, 0);
             //av_dict_set(&options, "preset", "slow", 0);
             break;
     }
@@ -817,8 +818,6 @@ static void open_video(AVCodecContext *codec_context,
         av_dict_set_int(&options, "zerolatency", 1, 0);
         //av_dict_set(&options, "preset", "llhq", 0);
     }
-
-    av_dict_set(&options, "rc", "vbr", 0);
 
     ret = avcodec_open2(codec_context, codec_context->codec, &options);
     if (ret < 0) {
