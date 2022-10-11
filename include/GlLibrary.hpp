@@ -26,6 +26,8 @@ typedef struct __GLXFBConfigRec *GLXFBConfig;
 #define GL_TEXTURE_HEIGHT                       0x1001
 #define GL_NEAREST                              0x2600
 
+#define GL_RENDERER                             0x1F01
+
 #define GLX_BUFFER_SIZE                         2
 #define GLX_DOUBLEBUFFER                        5
 #define GLX_RED_SIZE                            8
@@ -71,6 +73,7 @@ struct GlLibrary {
     void (*glClearTexImage)(unsigned int texture, unsigned int level, unsigned int format, unsigned int type, const void *data);
 
     unsigned int (*glGetError)(void);
+    const unsigned char* (*glGetString)(unsigned int name);
     void (*glClear)(unsigned int mask);
     void (*glGenTextures)(int n, unsigned int *textures);
     void (*glDeleteTextures)(int n, const unsigned int *texture);
@@ -81,8 +84,7 @@ struct GlLibrary {
     void (*glCopyImageSubData)(unsigned int srcName, unsigned int srcTarget, int srcLevel, int srcX, int srcY, int srcZ, unsigned int dstName, unsigned int dstTarget, int dstLevel, int dstX, int dstY, int dstZ, int srcWidth, int srcHeight, int srcDepth);
 
     ~GlLibrary() {
-        if(library)
-            dlclose(library);
+        unload();
     }
 
     bool load() {
@@ -120,6 +122,7 @@ struct GlLibrary {
             { (void**)&glXSwapBuffers, "glXSwapBuffers" },
 
             { (void**)&glGetError, "glGetError" },
+            { (void**)&glGetString, "glGetString" },
             { (void**)&glClear, "glClear" },
             { (void**)&glGenTextures, "glGenTextures" },
             { (void**)&glDeleteTextures, "glDeleteTextures" },
@@ -139,6 +142,13 @@ struct GlLibrary {
             fprintf(stderr, "Error: missing required symbols in libGL.so.1\n");
             dlclose(lib);
             return false;
+        }
+    }
+
+    void unload() {
+        if(library) {
+            dlclose(library);
+            library = nullptr;
         }
     }
 private:

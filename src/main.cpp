@@ -596,20 +596,24 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
     return codec_context;
 }
 
+static const AVCodec* find_h264_encoder() {
+    const AVCodec *codec = avcodec_find_encoder_by_name("h264_nvenc");
+    if(!codec)
+        codec = avcodec_find_encoder_by_name("nvenc_h264");
+    return codec;
+}
+
+static const AVCodec* find_h265_encoder() {
+    const AVCodec *codec = avcodec_find_encoder_by_name("hevc_nvenc");
+    if(!codec)
+        codec = avcodec_find_encoder_by_name("nvenc_hevc");
+    return codec;
+}
+
 static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_context, 
                             VideoQuality video_quality,
                             int record_width, int record_height,
-                            int fps, VideoCodec video_codec, bool is_livestream) {
-    const AVCodec *codec = avcodec_find_encoder_by_name(video_codec == VideoCodec::H265 ? "hevc_nvenc" : "h264_nvenc");
-    if (!codec) {
-        codec = avcodec_find_encoder_by_name(video_codec == VideoCodec::H265 ? "nvenc_hevc" : "nvenc_h264");
-    }
-    if (!codec) {
-        fprintf(
-            stderr,
-            "Error: Could not find %s encoder\n", video_codec == VideoCodec::H265 ? "hevc" : "h264");
-        exit(1);
-    }
+                            int fps, const AVCodec *codec, bool is_livestream) {
 
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
 
@@ -642,7 +646,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->max_b_frames = 0;
     codec_context->pix_fmt = AV_PIX_FMT_CUDA;
     codec_context->color_range = AVCOL_RANGE_JPEG;
-    if(video_codec == VideoCodec::H265)
+    if(codec->id == AV_CODEC_ID_HEVC)
         codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
         case VideoQuality::MEDIUM:
@@ -743,7 +747,7 @@ static AVBufferRef* dummy_hw_frame_init(size_t size) {
 
 static void open_video(AVCodecContext *codec_context,
                        WindowPixmap &window_pixmap, AVBufferRef **device_ctx,
-                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context, bool use_nvfbc, VideoQuality video_quality, bool is_livestream) {
+                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context, bool use_nvfbc, VideoQuality video_quality, bool is_livestream, bool very_old_gpu) {
     int ret;
 
     *device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
@@ -810,7 +814,15 @@ static void open_video(AVCodecContext *codec_context,
     //    //av_dict_set(&options, "preset", "llhq", 0);
     //}
 
-    av_dict_set(&options, "preset", "p7", 0);
+    // Fuck nvidia and ffmpeg, I want to use a good preset for the gpu but all gpus prefer different
+    // presets. Nvidia and ffmpeg used to support "hq" preset that chose the best preset for the gpu
+    // with pretty good performance but you now have to choose p1-p7, which are gpu agnostic and on
+    // older gpus p5-p7 slow the gpu down to a crawl...
+    // "hq" is now just an alias for p7 in ffmpeg :(
+    if(very_old_gpu)
+        av_dict_set(&options, "preset", "p4", 0);
+    else
+        av_dict_set(&options, "preset", "p7", 0);
     av_dict_set(&options, "tune", "hq", 0);
     av_dict_set(&options, "rc", "constqp", 0);
 
@@ -1340,21 +1352,18 @@ int main(int argc, char **argv) {
 
     const double target_fps = 1.0 / (double)fps;
 
+    Display *dpy = XOpenDisplay(nullptr);
+    if (!dpy) {
+        fprintf(stderr, "Error: Failed to open display\n");
+        return 1;
+    }
+
+    XSetErrorHandler(x11_error_handler);
+    XSetIOErrorHandler(x11_io_error_handler);
+
     WindowPixmap window_pixmap;
-    Display *dpy = nullptr;
     Window window = None;
     if(src_window_id) {
-        dpy = XOpenDisplay(nullptr);
-        if (!dpy) {
-            fprintf(stderr, "Error: Failed to open display\n");
-            return 1;
-        }
-
-        //#if defined(DEBUG)
-        XSetErrorHandler(x11_error_handler);
-        XSetIOErrorHandler(x11_io_error_handler);
-        //#endif
-
         bool has_name_pixmap = x11_supports_composite_named_window_pixmap(dpy);
         if (!has_name_pixmap) {
             fprintf(stderr, "Error: XCompositeNameWindowPixmap is not supported by "
@@ -1401,11 +1410,37 @@ int main(int argc, char **argv) {
         window_pixmap.texture_height = window_height;
     }
 
+    bool very_old_gpu = false;
+    bool gl_loaded = window;
+    if(!gl_loaded) {
+        if(!gl.load()) {
+            fprintf(stderr, "Error: Failed to load opengl\n");
+            return 1;
+        }
+    }
+
+    const unsigned char *gl_renderer = gl.glGetString(GL_RENDERER);
+    if(gl_renderer) {
+        int gpu_num = 1000;
+        sscanf((const char*)gl_renderer, "%*s %*s %*s %d", &gpu_num);
+        if(gpu_num < 900) {
+            fprintf(stderr, "Info: your gpu appears to be very old (older than maxwell architecture). Switching to lower preset\n");
+            very_old_gpu = true;
+        }
+    }
+
+    if(!gl_loaded)
+        gl.unload();
+
     if(strcmp(codec_to_use, "auto") == 0) {
+        const AVCodec *h265_codec = find_h265_encoder();
+
         // h265 generally allows recording at a higher resolution than h264 on nvidia cards. On a gtx 1080 4k is the max resolution for h264 but for h265 it's 8k.
         // Another important info is that when recording at a higher fps than.. 60? h265 has very bad performance. For example when recording at 144 fps the fps drops to 1
         // while with h264 the fps doesn't drop.
-        if(fps > 60) {
+        if(!h265_codec) {
+            fprintf(stderr, "Info: using h264 encoder because a codec was not specified and your gpu does not support h265\n");
+        } else if(fps > 60) {
             fprintf(stderr, "Info: using h264 encoder because a codec was not specified and fps is more than 60\n");
             codec_to_use = "h264";
             video_codec = VideoCodec::H264;
@@ -1414,6 +1449,21 @@ int main(int argc, char **argv) {
             codec_to_use = "h265";
             video_codec = VideoCodec::H265;
         }
+    }
+
+    const AVCodec *video_codec_f = nullptr;
+    switch(video_codec) {
+        case VideoCodec::H264:
+            video_codec_f = find_h264_encoder();
+            break;
+        case VideoCodec::H265:
+            video_codec_f = find_h265_encoder();
+            break;
+    }
+
+    if(!video_codec_f) {
+        fprintf(stderr, "Error: your gpu does not support '%s' video codec\n", video_codec == VideoCodec::H264 ? "h264" : "h265");
+        exit(2);
     }
 
     // Video start
@@ -1448,13 +1498,13 @@ int main(int argc, char **argv) {
     AVStream *video_stream = nullptr;
     std::vector<AudioTrack> audio_tracks;
 
-    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, record_width, record_height, fps, video_codec, is_livestream);
+    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, record_width, record_height, fps, video_codec_f, is_livestream);
     if(replay_buffer_size_secs == -1)
         video_stream = create_stream(av_format_context, video_codec_context);
 
     AVBufferRef *device_ctx;
     CUgraphicsResource cuda_graphics_resource;
-    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx, !src_window_id, quality, is_livestream);
+    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx, !src_window_id, quality, is_livestream, very_old_gpu);
     if(video_stream)
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
@@ -1498,7 +1548,7 @@ int main(int argc, char **argv) {
     // av_frame_free(&rgb_frame);
     // avcodec_close(av_codec_context);
 
-    if(dpy)
+    if(src_window_id)
         XSelectInput(dpy, src_window_id, StructureNotifyMask | ExposureMask);
 
     /*
