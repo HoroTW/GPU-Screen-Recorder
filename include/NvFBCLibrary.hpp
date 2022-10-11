@@ -1,6 +1,6 @@
 #pragma once
 
-#include <NvFBC.h>
+#include "../external/NvFBC.h"
 #include <dlfcn.h>
 #include <string.h>
 #include <stdio.h>

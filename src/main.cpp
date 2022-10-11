@@ -349,6 +349,7 @@ static bool recreate_window_pixmap(Display *dpy, Window window_id,
             fprintf(stderr, "Warning: failed to get texture size. You are probably trying to record a window with client-side decorations (using GNOME?). Trying to fallback to recording the compositor proxy window\n");
             XCompositeRedirectWindow(dpy, compositor_window, CompositeRedirectAutomatic);
 
+            // TODO: Target texture should be the same size as the target window, not the size of the composite window
             if(recreate_window_pixmap(dpy, compositor_window, pixmap, false)) {
                 pixmap.composite_window = compositor_window;
                 pixmap.texture_width = attr.width;
@@ -645,29 +646,24 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
         codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
     switch(video_quality) {
         case VideoQuality::MEDIUM:
-            codec_context->bit_rate = 6500000 + (codec_context->width * codec_context->height)*0.75;
-            /*
-            if(use_hevc) {
-                codec_context->qmin = 20;
-                codec_context->qmax = 35;
-            } else {
-                codec_context->qmin = 5;
-                codec_context->qmax = 20;
-            }
-            */
-            //av_opt_set(codec_context->priv_data, "preset", "slow", 0);
-            //av_opt_set(codec_context->priv_data, "profile", "high", 0);
-            //codec_context->profile = FF_PROFILE_H264_HIGH;
-            //av_opt_set(codec_context->priv_data, "preset", "p4", 0);
+            //codec_context->qmin = 35;
+            //codec_context->qmax = 35;
+            codec_context->bit_rate = 100000;//4500000 + (codec_context->width * codec_context->height)*0.75;
             break;
         case VideoQuality::HIGH:
-            codec_context->bit_rate = 10000000-5000000 + (codec_context->width * codec_context->height)*0.75;
+            //codec_context->qmin = 34;
+            //codec_context->qmax = 34;
+            codec_context->bit_rate = 100000;//10000000-9000000 + (codec_context->width * codec_context->height)*0.75;
             break;
         case VideoQuality::VERY_HIGH:
-            codec_context->bit_rate = 10000000-5000000 + (codec_context->width * codec_context->height)*0.75;
+            //codec_context->qmin = 28;
+            //codec_context->qmax = 28;
+            codec_context->bit_rate = 100000;//10000000-9000000 + (codec_context->width * codec_context->height)*0.75;
             break;
         case VideoQuality::ULTRA:
-            codec_context->bit_rate = 10000000-5000000 + (codec_context->width * codec_context->height)*0.75;
+            //codec_context->qmin = 22;
+            //codec_context->qmax = 22;
+            codec_context->bit_rate = 100000;//10000000-9000000 + (codec_context->width * codec_context->height)*0.75;
             break;
     }
     //codec_context->profile = FF_PROFILE_H264_MAIN;
@@ -693,9 +689,9 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     codec_context->bit_rate = 0;
     #endif
 
-    codec_context->rc_max_rate = codec_context->bit_rate;
-    codec_context->rc_min_rate = codec_context->bit_rate;
-    codec_context->rc_buffer_size = codec_context->bit_rate / 10;
+    //codec_context->rc_max_rate = codec_context->bit_rate;
+    //codec_context->rc_min_rate = codec_context->bit_rate;
+    //codec_context->rc_buffer_size = codec_context->bit_rate / 10;
 
     av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     codec_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -796,28 +792,27 @@ static void open_video(AVCodecContext *codec_context,
     AVDictionary *options = nullptr;
     switch(video_quality) {
         case VideoQuality::MEDIUM:
-	        av_dict_set_int(&options, "qp", 35, 0);
-            av_dict_set(&options, "rc", "vbr", 0);
-            //av_dict_set(&options, "preset", "hq", 0);
+	        av_dict_set_int(&options, "qp", 40, 0);
             break;
         case VideoQuality::HIGH:
-	        av_dict_set_int(&options, "qp", 34, 0);
-            //av_dict_set(&options, "preset", "hq", 0);
+	        av_dict_set_int(&options, "qp", 35, 0);
             break;
         case VideoQuality::VERY_HIGH:
-	        av_dict_set_int(&options, "qp", 28, 0);
-            //av_dict_set(&options, "preset", "hq", 0);
+	        av_dict_set_int(&options, "qp", 30, 0);
             break;
         case VideoQuality::ULTRA:
-            av_dict_set_int(&options, "qp", 22, 0);
-            //av_dict_set(&options, "preset", "slow", 0);
+            av_dict_set_int(&options, "qp", 24, 0);
             break;
     }
 
-    if(is_livestream) {
-        av_dict_set_int(&options, "zerolatency", 1, 0);
-        //av_dict_set(&options, "preset", "llhq", 0);
-    }
+    //if(is_livestream) {
+    //    av_dict_set_int(&options, "zerolatency", 1, 0);
+    //    //av_dict_set(&options, "preset", "llhq", 0);
+    //}
+
+    av_dict_set(&options, "preset", "p7", 0);
+    av_dict_set(&options, "tune", "hq", 0);
+    av_dict_set(&options, "rc", "constqp", 0);
 
     ret = avcodec_open2(codec_context, codec_context->codec, &options);
     if (ret < 0) {
@@ -866,7 +861,7 @@ static void usage() {
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
-    fprintf(stderr, "  -k    Codec to use. Should be either 'h264' or 'h265'. Defaults to 'h264' unless recording at a higher resolution than 3840x2160. Forcefully set to 'h264' if -c is 'flv.\n");
+    fprintf(stderr, "  -k    Codec to use. Should be either 'auto', 'h264' or 'h265'. Defaults to 'auto' which defaults to 'h265' unless recording at a higher resolution than 60. Forcefully set to 'h264' if -c is 'flv'.\n");
     fprintf(stderr, "  -o    The output file path. If omitted then the encoded data is sent to stdout. Required in replay mode (when using -r). In replay mode this has to be an existing directory instead of a file.\n");
     fprintf(stderr, "NOTES:\n");
     fprintf(stderr, "  Send signal SIGINT (Ctrl+C) to gpu-screen-recorder to stop and save the recording (when not using replay mode).\n");
@@ -1139,15 +1134,16 @@ int main(int argc, char **argv) {
 
     VideoCodec video_codec;
     const char *codec_to_use = args["-k"].value();
-    if(codec_to_use) {
-        if(strcmp(codec_to_use, "h264") == 0) {
-            video_codec = VideoCodec::H264;
-        } else if(strcmp(codec_to_use, "h265") == 0) {
-            video_codec = VideoCodec::H265;
-        } else {
-            fprintf(stderr, "Error: -k should either be either 'h264' or 'h265', got: '%s'\n", codec_to_use);
-            usage();
-        }
+    if(!codec_to_use)
+        codec_to_use = "auto";
+
+    if(strcmp(codec_to_use, "h264") == 0) {
+        video_codec = VideoCodec::H264;
+    } else if(strcmp(codec_to_use, "h265") == 0) {
+        video_codec = VideoCodec::H265;
+    } else if(strcmp(codec_to_use, "auto") != 0) {
+        fprintf(stderr, "Error: -k should either be either 'auto', 'h264' or 'h265', got: '%s'\n", codec_to_use);
+        usage();
     }
 
     const Arg &audio_input_arg = args["-a"];
@@ -1405,18 +1401,18 @@ int main(int argc, char **argv) {
         window_pixmap.texture_height = window_height;
     }
 
-    if(!codec_to_use) {
+    if(strcmp(codec_to_use, "auto") == 0) {
         // h265 generally allows recording at a higher resolution than h264 on nvidia cards. On a gtx 1080 4k is the max resolution for h264 but for h265 it's 8k.
         // Another important info is that when recording at a higher fps than.. 60? h265 has very bad performance. For example when recording at 144 fps the fps drops to 1
         // while with h264 the fps doesn't drop.
-        if(window_width > 3840 || window_height > 2160) {
-            fprintf(stderr, "Info: using h265 encoder because a codec was not specified and resolution width is more than 3840 or height is more than 2160\n");
-            codec_to_use = "h265";
-            video_codec = VideoCodec::H265;
-        } else {
-            fprintf(stderr, "Info: using h264 encoder because a codec was not specified\n");
+        if(fps > 60) {
+            fprintf(stderr, "Info: using h264 encoder because a codec was not specified and fps is more than 60\n");
             codec_to_use = "h264";
             video_codec = VideoCodec::H264;
+        } else {
+            fprintf(stderr, "Info: using h265 encoder because a codec was not specified\n");
+            codec_to_use = "h265";
+            video_codec = VideoCodec::H265;
         }
     }
 
