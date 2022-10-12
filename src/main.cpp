@@ -807,7 +807,7 @@ static void open_video(AVCodecContext *codec_context,
     }
 
     AVDictionary *options = nullptr;
-    if(very_old_gpu || !supports_p7) {
+    if(very_old_gpu) {
         switch(video_quality) {
             case VideoQuality::MEDIUM:
                 av_dict_set_int(&options, "qp", 37, 0);
@@ -853,10 +853,11 @@ static void open_video(AVCodecContext *codec_context,
     // with pretty good performance but you now have to choose p1-p7, which are gpu agnostic and on
     // older gpus p5-p7 slow the gpu down to a crawl...
     // "hq" is now just an alias for p7 in ffmpeg :(
-    if(very_old_gpu && supports_p4)
-        av_dict_set(&options, "preset", "p4", 0);
-    else if(supports_p7)
-        av_dict_set(&options, "preset", "p7", 0);
+    if(very_old_gpu)
+        av_dict_set(&options, "preset", supports_p4 ? "p4" : "medium", 0);
+    else
+        av_dict_set(&options, "preset", supports_p7 ? "p7" : "slow", 0);
+
     av_dict_set(&options, "tune", "hq", 0);
     av_dict_set(&options, "rc", "constqp", 0);
 
