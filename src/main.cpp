@@ -793,20 +793,54 @@ static void open_video(AVCodecContext *codec_context,
     codec_context->hw_device_ctx = *device_ctx;
     codec_context->hw_frames_ctx = frame_context;
 
+    bool supports_p4 = false;
+    bool supports_p7 = false;
+
+    const AVOption *opt = nullptr;
+    while((opt = av_opt_next(codec_context->priv_data, opt))) {
+        if(opt->type == AV_OPT_TYPE_CONST) {
+            if(strcmp(opt->name, "p4") == 0)
+                supports_p4 = true;
+            else if(strcmp(opt->name, "p7") == 0)
+                supports_p7 = true;
+        }
+    }
+
     AVDictionary *options = nullptr;
-    switch(video_quality) {
-        case VideoQuality::MEDIUM:
-	        av_dict_set_int(&options, "qp", 40, 0);
-            break;
-        case VideoQuality::HIGH:
-	        av_dict_set_int(&options, "qp", 35, 0);
-            break;
-        case VideoQuality::VERY_HIGH:
-	        av_dict_set_int(&options, "qp", 30, 0);
-            break;
-        case VideoQuality::ULTRA:
-            av_dict_set_int(&options, "qp", 24, 0);
-            break;
+    if(very_old_gpu || !supports_p7) {
+        switch(video_quality) {
+            case VideoQuality::MEDIUM:
+                av_dict_set_int(&options, "qp", 37, 0);
+                break;
+            case VideoQuality::HIGH:
+                av_dict_set_int(&options, "qp", 32, 0);
+                break;
+            case VideoQuality::VERY_HIGH:
+                av_dict_set_int(&options, "qp", 27, 0);
+                break;
+            case VideoQuality::ULTRA:
+                av_dict_set_int(&options, "qp", 21, 0);
+                break;
+        }
+    } else {
+        switch(video_quality) {
+            case VideoQuality::MEDIUM:
+                av_dict_set_int(&options, "qp", 40, 0);
+                break;
+            case VideoQuality::HIGH:
+                av_dict_set_int(&options, "qp", 35, 0);
+                break;
+            case VideoQuality::VERY_HIGH:
+                av_dict_set_int(&options, "qp", 30, 0);
+                break;
+            case VideoQuality::ULTRA:
+                av_dict_set_int(&options, "qp", 24, 0);
+                break;
+        }
+    }
+
+    if(!supports_p4 && !supports_p7) {
+        fprintf(stderr, "Info: your ffmpeg version is outdated. It's recommended that you use the flatpak version of gpu-screen-recorder version instead, which you can find at https://flathub.org/apps/details/com.dec05eba.gpu_screen_recorder\n");
     }
 
     //if(is_livestream) {
@@ -819,9 +853,9 @@ static void open_video(AVCodecContext *codec_context,
     // with pretty good performance but you now have to choose p1-p7, which are gpu agnostic and on
     // older gpus p5-p7 slow the gpu down to a crawl...
     // "hq" is now just an alias for p7 in ffmpeg :(
-    if(very_old_gpu)
+    if(very_old_gpu && supports_p4)
         av_dict_set(&options, "preset", "p4", 0);
-    else
+    else if(supports_p7)
         av_dict_set(&options, "preset", "p7", 0);
     av_dict_set(&options, "tune", "hq", 0);
     av_dict_set(&options, "rc", "constqp", 0);
