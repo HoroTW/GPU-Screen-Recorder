@@ -15,6 +15,10 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+extern "C" {
+#include "../include/capture/nvfbc.h"
+}
+
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,11 +35,11 @@
 #include <fcntl.h>
 
 #include "../include/sound.hpp"
-#include "../include/NvFBCLibrary.hpp"
 #include "../include/CudaLibrary.hpp"
 #include "../include/GlLibrary.hpp"
 
 #include <X11/extensions/Xcomposite.h>
+#include <X11/extensions/Xrandr.h>
 //#include <X11/Xatom.h>
 
 extern "C" {
@@ -65,6 +69,75 @@ static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
 
 static Cuda cuda;
 static GlLibrary gl;
+
+static const XRRModeInfo* get_mode_info(const XRRScreenResources *sr, RRMode id) {
+    for(int i = 0; i < sr->nmode; ++i) {
+        if(sr->modes[i].id == id)
+            return &sr->modes[i];
+    }    
+    return nullptr;
+}
+
+typedef void (*active_monitor_callback)(const XRROutputInfo *output_info, const XRRCrtcInfo *crt_info, const XRRModeInfo *mode_info, void *userdata);
+
+static void for_each_active_monitor_output(Display *display, active_monitor_callback callback, void *userdata) {
+    XRRScreenResources *screen_res = XRRGetScreenResources(display, DefaultRootWindow(display));
+    if(!screen_res)
+        return;
+
+    for(int i = 0; i < screen_res->noutput; ++i) {
+        XRROutputInfo *out_info = XRRGetOutputInfo(display, screen_res, screen_res->outputs[i]);
+        if(out_info && out_info->crtc && out_info->connection == RR_Connected) {
+            XRRCrtcInfo *crt_info = XRRGetCrtcInfo(display, screen_res, out_info->crtc);
+            if(crt_info && crt_info->mode) {
+                const XRRModeInfo *mode_info = get_mode_info(screen_res, crt_info->mode);
+                if(mode_info)
+                    callback(out_info, crt_info, mode_info, userdata);
+            }
+            if(crt_info)
+                XRRFreeCrtcInfo(crt_info);
+        }
+        if(out_info)
+            XRRFreeOutputInfo(out_info);
+    }    
+
+    XRRFreeScreenResources(screen_res);
+}
+
+typedef struct {
+    vec2i pos;
+    vec2i size;
+} gsr_monitor;
+
+typedef struct {
+    const char *name;
+    int name_len;
+    gsr_monitor *monitor;
+    bool found_monitor;
+} get_monitor_by_name_userdata;
+
+static void get_monitor_by_name_callback(const XRROutputInfo *output_info, const XRRCrtcInfo *crt_info, const XRRModeInfo *mode_info, void *userdata) {
+    get_monitor_by_name_userdata *data = (get_monitor_by_name_userdata*)userdata;
+    if(!data->found_monitor && data->name_len == output_info->nameLen && memcmp(data->name, output_info->name, data->name_len) == 0) {
+        data->monitor->pos = { crt_info->x, crt_info->y };
+        data->monitor->size = { (int)crt_info->width, (int)crt_info->height };
+        data->found_monitor = true;
+    }
+}
+
+static bool get_monitor_by_name(Display *display, const char *name, gsr_monitor *monitor) {
+    get_monitor_by_name_userdata userdata;
+    userdata.name = name;
+    userdata.name_len = strlen(name);
+    userdata.monitor = monitor;
+    userdata.found_monitor = false;
+    for_each_active_monitor_output(display, get_monitor_by_name_callback, &userdata);
+    return userdata.found_monitor;
+}
+
+static void monitor_output_callback_print(const XRROutputInfo *output_info, const XRRCrtcInfo *crt_info, const XRRModeInfo *mode_info, void *userdata) {
+    fprintf(stderr, "    \"%.*s\"    (%dx%d+%d+%d)\n", output_info->nameLen, output_info->name, (int)crt_info->width, (int)crt_info->height, crt_info->x, crt_info->y);
+}
 
 static char* av_error_to_string(int err) {
     if(av_strerror(err, av_error_buffer, sizeof(av_error_buffer)) < 0)
@@ -1216,7 +1289,7 @@ int main(int argc, char **argv) {
         }
 
         if(!match) {
-            fprintf(stderr, "Error: Audio input device '%s' is not a valid audio device. Expected one of:\n", request_audio_input.name.c_str());
+            fprintf(stderr, "Error: Audio input device '%s' is not a valid audio device, expected one of:\n", request_audio_input.name.c_str());
             for(const auto &existing_audio_input : audio_inputs) {
                 fprintf(stderr, "    %s\n", existing_audio_input.name.c_str());
             }
@@ -1318,6 +1391,15 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    Display *dpy = XOpenDisplay(nullptr);
+    if (!dpy) {
+        fprintf(stderr, "Error: Failed to open display\n");
+        return 1;
+    }
+
+    XSetErrorHandler(x11_error_handler);
+    XSetIOErrorHandler(x11_io_error_handler);
+
     const char *record_area = args["-s"].value();
 
     uint32_t window_width = 0;
@@ -1325,7 +1407,7 @@ int main(int argc, char **argv) {
     int window_x = 0;
     int window_y = 0;
 
-    NvFBCLibrary nv_fbc_library;
+    gsr_capture *capture = nullptr;
 
     const char *window_str = args["-w"].value();
     Window src_window_id = None;
@@ -1334,9 +1416,6 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Option -s is not supported when recording a monitor/screen\n");
             usage();
         }
-
-        if(!nv_fbc_library.load())
-            return 1;
 
         const char *capture_target = window_str;
         bool direct_capture = strcmp(window_str, "screen-direct") == 0;
@@ -1347,7 +1426,36 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Warning: screen-direct has temporary been disabled as it causes stuttering. This is likely a NvFBC bug. Falling back to \"screen\".\n");
         }
 
-        if(!nv_fbc_library.create(capture_target, fps, &window_width, &window_height, region_x, region_y, region_width, region_height, direct_capture))
+        gsr_capture_nvfbc_params nvfbc_params;
+        nvfbc_params.display_to_capture = capture_target;
+        nvfbc_params.fps = fps;
+        nvfbc_params.pos = { (int)region_x, (int)region_y };
+        nvfbc_params.size = { (int)region_width, (int)region_height };
+        nvfbc_params.direct_capture = direct_capture;
+        capture = gsr_capture_nvfbc_create(&nvfbc_params);
+        if(!capture)
+            return 1;
+
+        // TODO: Set window_width and window_height to the nvfbc blalba
+        if(strcmp(capture_target, "screen") == 0) {
+            window_width = WidthOfScreen(DefaultScreenOfDisplay(dpy));
+            window_height = HeightOfScreen(DefaultScreenOfDisplay(dpy));
+        } else {
+            gsr_monitor gmon;
+            if(!get_monitor_by_name(dpy, capture_target, &gmon)) {
+                fprintf(stderr, "gsr error: display \"%s\" not found, expected one of:\n", capture_target);
+                fprintf(stderr, "    \"screen\"    (%dx%d+%d+%d)\n", WidthOfScreen(DefaultScreenOfDisplay(dpy)), HeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
+                fprintf(stderr, "    \"screen-direct\"    (%dx%d+%d+%d)\n", WidthOfScreen(DefaultScreenOfDisplay(dpy)), HeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
+                for_each_active_monitor_output(dpy, monitor_output_callback_print, NULL);
+                return 1;
+            }
+
+            window_width = gmon.size.x;
+            window_height = gmon.size.y;
+        }
+
+        // TODO: Move down
+        if(gsr_capture_start(capture) != 0)
             return 1;
     } else {
         errno = 0;
@@ -1386,15 +1494,6 @@ int main(int argc, char **argv) {
     }
 
     const double target_fps = 1.0 / (double)fps;
-
-    Display *dpy = XOpenDisplay(nullptr);
-    if (!dpy) {
-        fprintf(stderr, "Error: Failed to open display\n");
-        return 1;
-    }
-
-    XSetErrorHandler(x11_error_handler);
-    XSetIOErrorHandler(x11_io_error_handler);
 
     WindowPixmap window_pixmap;
     Window window = None;
@@ -1993,13 +2092,7 @@ int main(int argc, char **argv) {
 
                     frame_captured = true;
                 } else {
-                    // TODO: Check when src_cu_device_ptr changes and re-register resource
-                    frame->linesize[0] = frame->width * 4;
-
-                    uint32_t byte_size = 0;
-                    CUdeviceptr src_cu_device_ptr = 0;
-                    frame_captured = nv_fbc_library.capture(&src_cu_device_ptr, &byte_size);
-                    frame->data[0] = (uint8_t*)src_cu_device_ptr;
+                    gsr_capture_capture(capture, frame);
                 }
                 // res = cuda.cuCtxPopCurrent_v2(&old_ctx);
             }
@@ -2058,6 +2151,9 @@ int main(int argc, char **argv) {
 
     if(replay_buffer_size_secs == -1 && !(output_format->flags & AVFMT_NOFILE))
         avio_close(av_format_context->pb);
+
+    if(capture)
+        gsr_capture_destroy(capture);
 
     if(dpy)
         XCloseDisplay(dpy);
