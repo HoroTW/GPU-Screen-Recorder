@@ -1,14 +1,17 @@
-# gpu screen recorder
+# GPU Screen Recorder
 This is a screen recorder that has minimal impact on system performance by recording a window using the GPU only,
 similar to shadowplay on windows. This is the fastest screen recording tool for Linux.
 
-This screen recorder can be used for recording your desktop offline, for live streaming and for nvidia-like instant replay,
+This screen recorder can be used for recording your desktop offline, for live streaming and for nvidia shadowplay-like instant replay,
 where only the last few seconds are saved.
 
 ## Note
+This software works only on x11.\
 Recording a window doesn't work when using picom in glx mode. However it works in xrender mode or when recording the a monitor/screen (which uses NvFBC).\
-For NvFBC to work with PRIME, you must set the primary GPU to your dedicated Nvidia graphics card. On Pop OS, you can select the 'NVIDIA Graphics' option in the power menu, or on Arch Linux you can use Optimus Manager.\
-If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.
+If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.\
+For screen capture to work with PRIME (laptops with a nvidia gpu), you must set the primary GPU to use your dedicated nvidia graphics card. You can do this by selecting "NVIDIA (Performance Mode) in nvidia settings:\
+![](https://dec05eba.com/images/nvidia-settings-prime.png)\
+and then rebooting your laptop.
 ### TEMPORARY ISSUE ###
 screen-direct capture has been temporary disabled as it causes issues with stuttering. This might be a nvfbc bug.
 
