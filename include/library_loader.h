@@ -1,4 +1,5 @@
-#pragma once
+#ifndef GSR_LIBRARY_LOADER_H
+#define GSR_LIBRARY_LOADER_H
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -36,3 +37,5 @@ static void dlsym_load_list_optional(void *handle, const dlsym_assign *dlsyms) {
         *dlsyms[i].func = dlsym_print_fail(handle, dlsyms[i].name, false);
     }
 }
+
+#endif /* GSR_LIBRARY_LOADER_H */

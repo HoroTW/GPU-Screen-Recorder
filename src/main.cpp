@@ -1,22 +1,8 @@
-/*
-    Copyright (C) 2020 dec05eba
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
-
 extern "C" {
 #include "../include/capture/nvfbc.h"
+#include "../include/capture/xcomposite.h"
+#include "../include/gl.h"
+#include "../include/time.h"
 }
 
 #include <assert.h>
@@ -35,27 +21,17 @@ extern "C" {
 #include <fcntl.h>
 
 #include "../include/sound.hpp"
-#include "../include/CudaLibrary.hpp"
-#include "../include/GlLibrary.hpp"
 
-#include <X11/extensions/Xcomposite.h>
 #include <X11/extensions/Xrandr.h>
-//#include <X11/Xatom.h>
 
 extern "C" {
 #include <libavutil/pixfmt.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libavutil/hwcontext.h>
-#include <libavutil/hwcontext_cuda.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
 #include <libavutil/avutil.h>
 #include <libavutil/time.h>
-}
-
-extern "C" {
-#include <libavutil/hwcontext.h>
 }
 
 #include <deque>
@@ -66,9 +42,6 @@ extern "C" {
 static const int VIDEO_STREAM_INDEX = 0;
 
 static thread_local char av_error_buffer[AV_ERROR_MAX_STRING_SIZE];
-
-static Cuda cuda;
-static GlLibrary gl;
 
 static const XRRModeInfo* get_mode_info(const XRRScreenResources *sr, RRMode id) {
     for(int i = 0; i < sr->nmode; ++i) {
@@ -145,30 +118,6 @@ static char* av_error_to_string(int err) {
     return av_error_buffer;
 }
 
-struct ScopedGLXFBConfig {
-    ~ScopedGLXFBConfig() {
-        if (configs)
-            XFree(configs);
-    }
-
-    GLXFBConfig *configs = nullptr;
-};
-
-struct WindowPixmap {
-    Pixmap pixmap = None;
-    GLXPixmap glx_pixmap = None;
-    unsigned int texture_id = 0;
-    unsigned int target_texture_id = 0;
-
-    int texture_width = 0;
-    int texture_height = 0;
-
-    int texture_real_width = 0;
-    int texture_real_height = 0;
-
-    Window composite_window = None;
-};
-
 enum class VideoQuality {
     MEDIUM,
     HIGH,
@@ -181,395 +130,12 @@ enum class VideoCodec {
     H265
 };
 
-static double clock_get_monotonic_seconds() {
-    struct timespec ts;
-    ts.tv_sec = 0;
-    ts.tv_nsec = 0;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 0.000000001;
-}
-
-static bool x11_supports_composite_named_window_pixmap(Display *dpy) {
-    int extension_major;
-    int extension_minor;
-    if (!XCompositeQueryExtension(dpy, &extension_major, &extension_minor))
-        return false;
-
-    int major_version;
-    int minor_version;
-    return XCompositeQueryVersion(dpy, &major_version, &minor_version) &&
-           (major_version > 0 || minor_version >= 2);
-}
-
 static int x11_error_handler(Display *dpy, XErrorEvent *ev) {
-#if 0
-    char type_str[128];
-    XGetErrorText(dpy, ev->type, type_str, sizeof(type_str));
-
-    char major_opcode_str[128];
-    XGetErrorText(dpy, ev->type, major_opcode_str, sizeof(major_opcode_str));
-
-    char minor_opcode_str[128];
-    XGetErrorText(dpy, ev->type, minor_opcode_str, sizeof(minor_opcode_str));
-
-    fprintf(stderr,
-        "X Error of failed request:  %s\n"
-        "Major opcode of failed request:  %d (%s)\n"
-        "Minor opcode of failed request:  %d (%s)\n"
-        "Serial number of failed request:  %d\n",
-            type_str,
-            ev->request_code, major_opcode_str,
-            ev->minor_code, minor_opcode_str);
-#endif
     return 0;
 }
 
 static int x11_io_error_handler(Display *dpy) {
     return 0;
-}
-
-static Window get_compositor_window(Display *display) {
-    Window overlay_window = XCompositeGetOverlayWindow(display, DefaultRootWindow(display));
-    XCompositeReleaseOverlayWindow(display, DefaultRootWindow(display));
-
-    /*
-    Atom xdnd_proxy = XInternAtom(display, "XdndProxy", False);
-    if(!xdnd_proxy)
-        return None;
-
-    Atom type = None;
-    int format = 0;
-    unsigned long nitems = 0, after = 0;
-    unsigned char *data = nullptr;
-    if(XGetWindowProperty(display, overlay_window, xdnd_proxy, 0, 1, False, XA_WINDOW, &type, &format, &nitems, &after, &data) != Success)
-        return None;
-
-    fprintf(stderr, "type: %ld, format: %d, num items: %lu\n", type, format, nitems);
-    if(type == XA_WINDOW && format == 32 && nitems == 1)
-        fprintf(stderr, "Proxy window: %ld\n", *(Window*)data);
-
-    if(data)
-        XFree(data);
-    */
-
-    Window root_window, parent_window;
-    Window *children = nullptr;
-    unsigned int num_children = 0;
-    if(XQueryTree(display, overlay_window, &root_window, &parent_window, &children, &num_children) == 0)
-        return None;
-
-    Window compositor_window = None;
-    if(num_children == 1) {
-        compositor_window = children[0];
-        const int screen_width = XWidthOfScreen(DefaultScreenOfDisplay(display));
-        const int screen_height = XHeightOfScreen(DefaultScreenOfDisplay(display));
-
-        XWindowAttributes attr;
-        if(!XGetWindowAttributes(display, compositor_window, &attr) || attr.width != screen_width || attr.height != screen_height)
-            compositor_window = None;
-    }
-
-    if(children)
-        XFree(children);
-
-    return compositor_window;
-}
-
-static void cleanup_window_pixmap(Display *dpy, WindowPixmap &pixmap) {
-    if (pixmap.target_texture_id) {
-        gl.glDeleteTextures(1, &pixmap.target_texture_id);
-        pixmap.target_texture_id = 0;
-    }
-
-    if (pixmap.texture_id) {
-        gl.glDeleteTextures(1, &pixmap.texture_id);
-        pixmap.texture_id = 0;
-        pixmap.texture_width = 0;
-        pixmap.texture_height = 0;
-        pixmap.texture_real_width = 0;
-        pixmap.texture_real_height = 0;
-    }
-
-    if (pixmap.glx_pixmap) {
-        gl.glXDestroyPixmap(dpy, pixmap.glx_pixmap);
-        gl.glXReleaseTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT);
-        pixmap.glx_pixmap = None;
-    }
-
-    if (pixmap.pixmap) {
-        XFreePixmap(dpy, pixmap.pixmap);
-        pixmap.pixmap = None;
-    }
-
-    if(pixmap.composite_window) {
-        XCompositeUnredirectWindow(dpy, pixmap.composite_window, CompositeRedirectAutomatic);
-        pixmap.composite_window = None;
-    }
-}
-
-static bool recreate_window_pixmap(Display *dpy, Window window_id,
-                                   WindowPixmap &pixmap, bool fallback_composite_window = true) {
-    cleanup_window_pixmap(dpy, pixmap);
-
-    XWindowAttributes attr;
-    if (!XGetWindowAttributes(dpy, window_id, &attr)) {
-        fprintf(stderr, "Failed to get window attributes\n");
-        return false;
-    }
-
-    const int pixmap_config[] = {
-        GLX_BIND_TO_TEXTURE_RGB_EXT, True,
-        GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT | GLX_WINDOW_BIT,
-        GLX_BIND_TO_TEXTURE_TARGETS_EXT, GLX_TEXTURE_2D_BIT_EXT,
-        GLX_BUFFER_SIZE, 24,
-        GLX_RED_SIZE, 8,
-        GLX_GREEN_SIZE, 8,
-        GLX_BLUE_SIZE, 8,
-        GLX_ALPHA_SIZE, 0,
-        // GLX_Y_INVERTED_EXT, (int)GLX_DONT_CARE,
-        None};
-
-    const int pixmap_attribs[] = {GLX_TEXTURE_TARGET_EXT,
-                                  GLX_TEXTURE_2D_EXT,
-                                  GLX_TEXTURE_FORMAT_EXT,
-                                  GLX_TEXTURE_FORMAT_RGB_EXT,
-                                  None};
-
-    int c;
-    GLXFBConfig *configs = gl.glXChooseFBConfig(dpy, 0, pixmap_config, &c);
-    if (!configs) {
-        fprintf(stderr, "Failed too choose fb config\n");
-        return false;
-    }
-    ScopedGLXFBConfig scoped_configs;
-    scoped_configs.configs = configs;
-
-    bool found = false;
-    GLXFBConfig config;
-    for (int i = 0; i < c; i++) {
-        config = configs[i];
-        XVisualInfo *visual = gl.glXGetVisualFromFBConfig(dpy, config);
-        if (!visual)
-            continue;
-
-        if (attr.depth != visual->depth) {
-            XFree(visual);
-            continue;
-        }
-        XFree(visual);
-        found = true;
-        break;
-    }
-
-    if(!found) {
-        fprintf(stderr, "No matching fb config found\n");
-        return false;
-    }
-
-    Pixmap new_window_pixmap = XCompositeNameWindowPixmap(dpy, window_id);
-    if (!new_window_pixmap) {
-        fprintf(stderr, "Failed to get pixmap for window %ld\n", window_id);
-        return false;
-    }
-
-    GLXPixmap glx_pixmap = gl.glXCreatePixmap(dpy, config, new_window_pixmap, pixmap_attribs);
-    if (!glx_pixmap) {
-        fprintf(stderr, "Failed to create glx pixmap\n");
-        XFreePixmap(dpy, new_window_pixmap);
-        return false;
-    }
-
-    pixmap.pixmap = new_window_pixmap;
-    pixmap.glx_pixmap = glx_pixmap;
-
-    //glEnable(GL_TEXTURE_2D);
-    gl.glGenTextures(1, &pixmap.texture_id);
-    gl.glBindTexture(GL_TEXTURE_2D, pixmap.texture_id);
-
-    // glEnable(GL_BLEND);
-    // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    gl.glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
-    gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-                    GL_NEAREST); // GL_LINEAR );
-    gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                    GL_NEAREST); // GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
-    //glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-
-    gl.glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH,
-                             &pixmap.texture_width);
-    gl.glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT,
-                             &pixmap.texture_height);
-
-    pixmap.texture_real_width = pixmap.texture_width;
-    pixmap.texture_real_height = pixmap.texture_height;
-
-    if(pixmap.texture_width == 0 || pixmap.texture_height == 0) {
-        gl.glBindTexture(GL_TEXTURE_2D, 0);        
-        pixmap.texture_width = attr.width;
-        pixmap.texture_height = attr.height;
-
-        pixmap.texture_real_width = pixmap.texture_width;
-        pixmap.texture_real_height = pixmap.texture_height;
-
-        if(fallback_composite_window) {
-            Window compositor_window = get_compositor_window(dpy);
-            if(!compositor_window) {
-                fprintf(stderr, "Warning: failed to get texture size. You are probably running an unsupported compositor and recording the selected window doesn't work at the moment. This could also happen if you are trying to record a window with client-side decorations. A black window will be displayed instead. A workaround is to record the whole monitor (which uses NvFBC).\n");
-                return false;
-            }
-
-            fprintf(stderr, "Warning: failed to get texture size. You are probably trying to record a window with client-side decorations (using GNOME?). Trying to fallback to recording the compositor proxy window\n");
-            XCompositeRedirectWindow(dpy, compositor_window, CompositeRedirectAutomatic);
-
-            // TODO: Target texture should be the same size as the target window, not the size of the composite window
-            if(recreate_window_pixmap(dpy, compositor_window, pixmap, false)) {
-                pixmap.composite_window = compositor_window;
-                pixmap.texture_width = attr.width;
-                pixmap.texture_height = attr.height;
-                return true;
-            }
-
-            pixmap.texture_width = attr.width;
-            pixmap.texture_height = attr.height;
-
-            return false;
-        } else {
-            fprintf(stderr, "Warning: failed to get texture size. You are probably running an unsupported compositor and recording the selected window doesn't work at the moment. This could also happen if you are trying to record a window with client-side decorations. A black window will be displayed instead. A workaround is to record the whole monitor (which uses NvFBC).\n");
-        }
-    }
-
-    fprintf(stderr, "texture width: %d, height: %d\n", pixmap.texture_width,
-           pixmap.texture_height);
-
-    // Generating this second texture is needed because
-    // cuGraphicsGLRegisterImage cant be used with the texture that is mapped
-    // directly to the pixmap.
-    // TODO: Investigate if it's somehow possible to use the pixmap texture
-    // directly, this should improve performance since only less image copy is
-    // then needed every frame.
-    gl.glGenTextures(1, &pixmap.target_texture_id);
-    gl.glBindTexture(GL_TEXTURE_2D, pixmap.target_texture_id);
-    gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, pixmap.texture_width,
-                 pixmap.texture_height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-    unsigned int err2 = gl.glGetError();
-    //fprintf(stderr, "error: %d\n", err2);
-    // glXBindTexImageEXT(dpy, pixmap.glx_pixmap, GLX_FRONT_EXT, NULL);
-    // glGenerateTextureMipmapEXT(glxpixmap, GL_TEXTURE_2D);
-
-    // glGenerateMipmap(GL_TEXTURE_2D);
-
-    // gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
-    // gl.glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
-
-    gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-                    GL_NEAREST); // GL_LINEAR );
-    gl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                    GL_NEAREST); // GL_LINEAR);//GL_LINEAR_MIPMAP_LINEAR );
-    //glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-
-    gl.glBindTexture(GL_TEXTURE_2D, 0);
-
-    return pixmap.texture_id != 0 && pixmap.target_texture_id != 0;
-}
-
-static Window create_opengl_window(Display *display) {
-    const int attr[] = {
-        GLX_RENDER_TYPE, GLX_RGBA_BIT,
-        GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
-        GLX_DOUBLEBUFFER, True,
-        GLX_RED_SIZE, 8,
-        GLX_GREEN_SIZE, 8,
-        GLX_BLUE_SIZE, 8,
-        GLX_ALPHA_SIZE, 8,
-        GLX_DEPTH_SIZE, 0,
-        None
-    };
-
-    XVisualInfo *visual_info = NULL;
-    GLXFBConfig fbconfig = NULL;
-
-    int numfbconfigs = 0;
-    GLXFBConfig *fbconfigs = gl.glXChooseFBConfig(display, DefaultScreen(display), attr, &numfbconfigs);
-    for(int i = 0; i < numfbconfigs; i++) {
-        visual_info = gl.glXGetVisualFromFBConfig(display, fbconfigs[i]);
-        if(!visual_info)
-            continue;
-
-        fbconfig = fbconfigs[i];
-        break;
-    }
-
-    if(!visual_info) {
-        fprintf(stderr, "mgl error: no appropriate visual found\n");
-        return -1;
-    }
-
-    // TODO: Core profile? GLX_CONTEXT_CORE_PROFILE_BIT_ARB.
-    // TODO: Remove need for 4.2 when copy texture function has been removed
-    int context_attribs[] = {
-        GLX_CONTEXT_MAJOR_VERSION_ARB, 4,
-        GLX_CONTEXT_MINOR_VERSION_ARB, 2,
-        GLX_CONTEXT_FLAGS_ARB, GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
-        None
-    };
-
-    GLXContext gl_context = gl.glXCreateContextAttribsARB(display, fbconfig, nullptr, True, context_attribs);
-    if(!gl_context) {
-        fprintf(stderr, "Error: failed to create gl context\n");
-        return None;
-    }
-
-    Colormap colormap = XCreateColormap(display, DefaultRootWindow(display), visual_info->visual, AllocNone);
-    if(!colormap) {
-        fprintf(stderr, "Error: failed to create x11 colormap\n");
-        gl.glXDestroyContext(display, gl_context);
-    }
-
-    XSetWindowAttributes window_attr;
-    window_attr.colormap = colormap;
-
-    // TODO: Is there a way to remove the need to create a window?
-    Window window = XCreateWindow(display, DefaultRootWindow(display), 0, 0, 1, 1, 0, visual_info->depth, InputOutput, visual_info->visual, CWColormap, &window_attr);
-
-    if(!window) {
-        fprintf(stderr, "Error: failed to create gl window\n");
-        goto fail;
-    }
-
-    if(!gl.glXMakeContextCurrent(display, window, window, gl_context)) {
-        fprintf(stderr, "Error: failed to make gl context current\n");
-        goto fail;
-    }
-
-    return window;
-
-    fail:
-    XFreeColormap(display, colormap);
-    gl.glXDestroyContext(display, gl_context);
-    return None;
-}
-
-/* TODO: check for glx swap control extension string (GLX_EXT_swap_control, etc) */
-static void set_vertical_sync_enabled(Display *display, Window window, bool enabled) {     
-    int result = 0;
-
-    if(gl.glXSwapIntervalEXT) {
-        gl.glXSwapIntervalEXT(display, window, enabled ? 1 : 0);
-    } else if(gl.glXSwapIntervalMESA) {
-        result = gl.glXSwapIntervalMESA(enabled ? 1 : 0);
-    } else if(gl.glXSwapIntervalSGI) {
-        result = gl.glXSwapIntervalSGI(enabled ? 1 : 0);
-    } else {
-        static int warned = 0;
-        if (!warned) {
-            warned = 1;
-            fprintf(stderr, "Warning: setting vertical sync not supported\n");
-        }
-    }
-
-    if(result != 0)
-        fprintf(stderr, "Warning: setting vertical sync failed\n");
 }
 
 // |stream| is only required for non-replay mode
@@ -641,11 +207,6 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
 
     assert(codec->type == AVMEDIA_TYPE_AUDIO);
-    /*
-    codec_context->sample_fmt = (*codec)->sample_fmts
-                                    ? (*codec)->sample_fmts[0]
-                                    : AV_SAMPLE_FMT_FLTP;
-    */
 	codec_context->codec_id = AV_CODEC_ID_AAC;
     codec_context->sample_fmt = AV_SAMPLE_FMT_FLTP;
     //codec_context->bit_rate = 64000;
@@ -685,7 +246,6 @@ static const AVCodec* find_h265_encoder() {
 
 static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_context, 
                             VideoQuality video_quality,
-                            int record_width, int record_height,
                             int fps, const AVCodec *codec, bool is_livestream) {
 
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
@@ -694,8 +254,6 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
 
     assert(codec->type == AVMEDIA_TYPE_VIDEO);
     codec_context->codec_id = codec->id;
-    codec_context->width = record_width & ~1;
-    codec_context->height = record_height & ~1;
     // Timebase: This is the fundamental unit of time (in seconds) in terms
     // of which frame timestamps are represented. For fixed-fps content,
     // timebase should be 1/framerate and timestamp increments should be
@@ -746,6 +304,9 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     //codec_context->profile = FF_PROFILE_H264_MAIN;
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
         codec_context->mb_decision = 2;
+
+    if(codec_context->codec_id == AV_CODEC_ID_H264)
+        codec_context->profile = FF_PROFILE_H264_HIGH;
 
     // stream->time_base = codec_context->time_base;
     // codec_context->ticks_per_frame = 30;
@@ -808,64 +369,7 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
     return frame;
 }
 
-#if LIBAVUTIL_VERSION_MAJOR < 57
-static AVBufferRef* dummy_hw_frame_init(int size) {
-    return av_buffer_alloc(size);
-}
-#else
-static AVBufferRef* dummy_hw_frame_init(size_t size) {
-    return av_buffer_alloc(size);
-}
-#endif
-
-static void open_video(AVCodecContext *codec_context,
-                       WindowPixmap &window_pixmap, AVBufferRef **device_ctx,
-                       CUgraphicsResource *cuda_graphics_resource, CUcontext cuda_context, bool use_nvfbc, VideoQuality video_quality, bool is_livestream, bool very_old_gpu) {
-    int ret;
-
-    *device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
-    if(!*device_ctx) {
-        fprintf(stderr, "Error: Failed to create hardware device context\n");
-        exit(1);
-    }
-
-    AVHWDeviceContext *hw_device_context = (AVHWDeviceContext *)(*device_ctx)->data;
-    AVCUDADeviceContext *cuda_device_context = (AVCUDADeviceContext *)hw_device_context->hwctx;
-    cuda_device_context->cuda_ctx = cuda_context;
-    if(av_hwdevice_ctx_init(*device_ctx) < 0) {
-        fprintf(stderr, "Error: Failed to create hardware device context\n");
-        exit(1);
-    }
-
-    AVBufferRef *frame_context = av_hwframe_ctx_alloc(*device_ctx);
-    if (!frame_context) {
-        fprintf(stderr, "Error: Failed to create hwframe context\n");
-        exit(1);
-    }
-
-    AVHWFramesContext *hw_frame_context =
-        (AVHWFramesContext *)frame_context->data;
-    hw_frame_context->width = codec_context->width;
-    hw_frame_context->height = codec_context->height;
-    hw_frame_context->sw_format = AV_PIX_FMT_0RGB32;
-    hw_frame_context->format = codec_context->pix_fmt;
-    hw_frame_context->device_ref = *device_ctx;
-    hw_frame_context->device_ctx = (AVHWDeviceContext *)(*device_ctx)->data;
-
-    if(use_nvfbc) {
-        hw_frame_context->pool = av_buffer_pool_init(1, dummy_hw_frame_init);
-        hw_frame_context->initial_pool_size = 1;
-    }
-
-    if (av_hwframe_ctx_init(frame_context) < 0) {
-        fprintf(stderr, "Error: Failed to initialize hardware frame context "
-                        "(note: ffmpeg version needs to be > 4.0\n");
-        exit(1);
-    }
-
-    codec_context->hw_device_ctx = *device_ctx;
-    codec_context->hw_frames_ctx = frame_context;
-
+static void open_video(AVCodecContext *codec_context, VideoQuality video_quality, bool very_old_gpu) {
     bool supports_p4 = false;
     bool supports_p7 = false;
 
@@ -912,9 +416,8 @@ static void open_video(AVCodecContext *codec_context,
         }
     }
 
-    if(!supports_p4 && !supports_p7) {
+    if(!supports_p4 && !supports_p7)
         fprintf(stderr, "Info: your ffmpeg version is outdated. It's recommended that you use the flatpak version of gpu-screen-recorder version instead, which you can find at https://flathub.org/apps/details/com.dec05eba.gpu_screen_recorder\n");
-    }
 
     //if(is_livestream) {
     //    av_dict_set_int(&options, "zerolatency", 1, 0);
@@ -934,38 +437,14 @@ static void open_video(AVCodecContext *codec_context,
     av_dict_set(&options, "tune", "hq", 0);
     av_dict_set(&options, "rc", "constqp", 0);
 
-    ret = avcodec_open2(codec_context, codec_context->codec, &options);
+    if(codec_context->codec_id == AV_CODEC_ID_H264)
+        av_dict_set(&options, "profile", "high", 0);
+
+    int ret = avcodec_open2(codec_context, codec_context->codec, &options);
     if (ret < 0) {
-        fprintf(stderr, "Error: Could not open video codec: %s\n",
-                "blabla"); // av_err2str(ret));
+        fprintf(stderr, "Error: Could not open video codec: %s\n", av_error_to_string(ret));
         exit(1);
     }
-
-    if(window_pixmap.target_texture_id != 0) {
-        CUresult res;
-        CUcontext old_ctx;
-        res = cuda.cuCtxPopCurrent_v2(&old_ctx);
-        res = cuda.cuCtxPushCurrent_v2(cuda_context);
-        res = cuda.cuGraphicsGLRegisterImage(
-            cuda_graphics_resource, window_pixmap.target_texture_id, GL_TEXTURE_2D,
-            CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
-        // cuda.cuGraphicsUnregisterResource(*cuda_graphics_resource);
-        if (res != CUDA_SUCCESS) {
-            const char *err_str;
-            cuda.cuGetErrorString(res, &err_str);
-            fprintf(stderr,
-                    "Error: cuda.cuGraphicsGLRegisterImage failed, error %s, texture "
-                    "id: %u\n",
-                    err_str, window_pixmap.target_texture_id);
-            exit(1);
-        }
-        res = cuda.cuCtxPopCurrent_v2(&old_ctx);
-    }
-}
-
-static void close_video(AVStream *video_stream, AVFrame *frame) {
-    // avcodec_close(video_stream->codec);
-    // av_frame_free(&frame);
 }
 
 static void usage() {
@@ -973,7 +452,6 @@ static void usage() {
     fprintf(stderr, "OPTIONS:\n");
     fprintf(stderr, "  -w    Window to record or a display, \"screen\" or \"screen-direct\". The display is the display name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded and they are recorded in h265 (aka hevc)."
         "\"screen-direct\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Recording a display requires a gpu with NvFBC support.\n");
-    fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. Usually you want to set this to the size of the window. Optional, by default the size of the window (which is passed to -w). This option is only supported when recording a window, not a screen/monitor.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. A name can be given to the audio input device by prefixing the audio input with <name>/, for example \"dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor\". Optional, no audio track is added by default.\n");
@@ -989,16 +467,8 @@ static void usage() {
     exit(1);
 }
 
-static sig_atomic_t started = 0;
 static sig_atomic_t running = 1;
 static sig_atomic_t save_replay = 0;
-static const char *pid_file = "/tmp/gpu-screen-recorder";
-
-static void term_handler(int) {
-    if(started)
-        unlink(pid_file);
-    exit(0);
-}
 
 static void int_handler(int) {
     running = 0;
@@ -1213,7 +683,6 @@ static bool is_livestream_path(const char *str) {
 }
 
 int main(int argc, char **argv) {
-    signal(SIGTERM, term_handler);
     signal(SIGINT, int_handler);
     signal(SIGUSR1, save_replay_handler);
 
@@ -1222,7 +691,7 @@ int main(int argc, char **argv) {
         //{ "-s", Arg { nullptr, true } },
         { "-c", Arg { {}, false, false } },
         { "-f", Arg { {}, false, false } },
-        { "-s", Arg { {}, true, false } },
+        //{ "-s", Arg { {}, true, false } },
         { "-a", Arg { {}, true, true } },
         { "-q", Arg { {}, true, false } },
         { "-o", Arg { {}, true, false } },
@@ -1297,22 +766,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    uint32_t region_x = 0;
-    uint32_t region_y = 0;
-    uint32_t region_width = 0;
-    uint32_t region_height = 0;
-
-    /*
-    TODO: Fix this. Doesn't work for some reason
-    const char *screen_region = args["-s"].value();
-    if(screen_region) {
-        if(sscanf(screen_region, "%ux%u+%u+%u", &region_x, &region_y, &region_width, &region_height) != 4) {
-            fprintf(stderr, "Invalid value for -s '%s', expected a value in format WxH+X+Y\n", screen_region);
-            return 1;
-        }
-    }
-    */
-
     const char *container_format = args["-c"].value();
     int fps = atoi(args["-f"].value());
     if(fps == 0) {
@@ -1351,46 +804,6 @@ int main(int argc, char **argv) {
         replay_buffer_size_secs += 5; // Add a few seconds to account of lost packets because of non-keyframe packets skipped
     }
 
-    if(!cuda.load()) {
-        fprintf(stderr, "Error: failed to load cuda\n");
-        return 2;
-    }
-
-    CUresult res;
-
-    res = cuda.cuInit(0);
-    if(res != CUDA_SUCCESS) {
-        const char *err_str;
-        cuda.cuGetErrorString(res, &err_str);
-        fprintf(stderr, "Error: cuInit failed, error %s (result: %d)\n", err_str, res);
-        return 1;
-    }
-
-    int nGpu = 0;
-    cuda.cuDeviceGetCount(&nGpu);
-    if (nGpu <= 0) {
-        fprintf(stderr, "Error: no cuda supported devices found\n");
-        return 1;
-    }
-
-    CUdevice cu_dev;
-    res = cuda.cuDeviceGet(&cu_dev, 0);
-    if(res != CUDA_SUCCESS) {
-        const char *err_str;
-        cuda.cuGetErrorString(res, &err_str);
-        fprintf(stderr, "Error: unable to get CUDA device, error: %s (result: %d)\n", err_str, res);
-        return 1;
-    }
-
-    CUcontext cu_ctx;
-    res = cuda.cuCtxCreate_v2(&cu_ctx, CU_CTX_SCHED_AUTO, cu_dev);
-    if(res != CUDA_SUCCESS) {
-        const char *err_str;
-        cuda.cuGetErrorString(res, &err_str);
-        fprintf(stderr, "Error: unable to create CUDA context, error: %s (result: %d)\n", err_str, res);
-        return 1;
-    }
-
     Display *dpy = XOpenDisplay(nullptr);
     if (!dpy) {
         fprintf(stderr, "Error: Failed to open display\n");
@@ -1400,23 +813,29 @@ int main(int argc, char **argv) {
     XSetErrorHandler(x11_error_handler);
     XSetIOErrorHandler(x11_io_error_handler);
 
-    const char *record_area = args["-s"].value();
+    gsr_gl gl;
+    if(!gsr_gl_load(&gl, dpy)) {
+        fprintf(stderr, "Error: failed to load opengl\n");
+        return 1;
+    }
 
-    uint32_t window_width = 0;
-    uint32_t window_height = 0;
-    int window_x = 0;
-    int window_y = 0;
+    bool very_old_gpu = false;
+    const unsigned char *gl_renderer = gl.glGetString(GL_RENDERER);
+    if(gl_renderer) {
+        int gpu_num = 1000;
+        sscanf((const char*)gl_renderer, "%*s %*s %*s %d", &gpu_num);
+        if(gpu_num < 900) {
+            fprintf(stderr, "Info: your gpu appears to be very old (older than maxwell architecture). Switching to lower preset\n");
+            very_old_gpu = true;
+        }
+    }
 
-    gsr_capture *capture = nullptr;
+    gsr_gl_unload(&gl);
 
     const char *window_str = args["-w"].value();
-    Window src_window_id = None;
-    if(contains_non_hex_number(window_str)) {
-        if(record_area) {
-            fprintf(stderr, "Option -s is not supported when recording a monitor/screen\n");
-            usage();
-        }
 
+    gsr_capture *capture = nullptr;
+    if(contains_non_hex_number(window_str)) {
         const char *capture_target = window_str;
         bool direct_capture = strcmp(window_str, "screen-direct") == 0;
         if(direct_capture) {
@@ -1427,52 +846,39 @@ int main(int argc, char **argv) {
         }
 
         gsr_capture_nvfbc_params nvfbc_params;
+        nvfbc_params.dpy = dpy;
         nvfbc_params.display_to_capture = capture_target;
         nvfbc_params.fps = fps;
-        nvfbc_params.pos = { (int)region_x, (int)region_y };
-        nvfbc_params.size = { (int)region_width, (int)region_height };
+        nvfbc_params.pos = { 0, 0 };
+        nvfbc_params.size = { 0, 0 };
         nvfbc_params.direct_capture = direct_capture;
         capture = gsr_capture_nvfbc_create(&nvfbc_params);
         if(!capture)
             return 1;
 
-        // TODO: Set window_width and window_height to the nvfbc blalba
-        if(strcmp(capture_target, "screen") == 0) {
-            window_width = WidthOfScreen(DefaultScreenOfDisplay(dpy));
-            window_height = HeightOfScreen(DefaultScreenOfDisplay(dpy));
-        } else {
+        if(strcmp(capture_target, "screen") != 0) {
             gsr_monitor gmon;
             if(!get_monitor_by_name(dpy, capture_target, &gmon)) {
                 fprintf(stderr, "gsr error: display \"%s\" not found, expected one of:\n", capture_target);
-                fprintf(stderr, "    \"screen\"    (%dx%d+%d+%d)\n", WidthOfScreen(DefaultScreenOfDisplay(dpy)), HeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
-                fprintf(stderr, "    \"screen-direct\"    (%dx%d+%d+%d)\n", WidthOfScreen(DefaultScreenOfDisplay(dpy)), HeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
+                fprintf(stderr, "    \"screen\"    (%dx%d+%d+%d)\n", XWidthOfScreen(DefaultScreenOfDisplay(dpy)), XHeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
+                fprintf(stderr, "    \"screen-direct\"    (%dx%d+%d+%d)\n", XWidthOfScreen(DefaultScreenOfDisplay(dpy)), XHeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
                 for_each_active_monitor_output(dpy, monitor_output_callback_print, NULL);
                 return 1;
             }
-
-            window_width = gmon.size.x;
-            window_height = gmon.size.y;
         }
-
-        // TODO: Move down
-        if(gsr_capture_start(capture) != 0)
-            return 1;
     } else {
         errno = 0;
-        src_window_id = strtol(window_str, nullptr, 0);
+        Window src_window_id = strtol(window_str, nullptr, 0);
         if(src_window_id == None || errno == EINVAL) {
             fprintf(stderr, "Invalid window number %s\n", window_str);
             usage();
         }
-    }
 
-    int record_width = window_width;
-    int record_height = window_height;
-    if(record_area) {
-        if(sscanf(record_area, "%dx%d", &record_width, &record_height) != 2) {
-            fprintf(stderr, "Invalid value for -s '%s', expected a value in format WxH\n", record_area);
+        gsr_capture_xcomposite_params xcomposite_params;
+        xcomposite_params.window = src_window_id;
+        capture = gsr_capture_xcomposite_create(&xcomposite_params);
+        if(!capture)
             return 1;
-        }
     }
 
     const char *filename = args["-o"].value();
@@ -1495,77 +901,6 @@ int main(int argc, char **argv) {
 
     const double target_fps = 1.0 / (double)fps;
 
-    WindowPixmap window_pixmap;
-    Window window = None;
-    if(src_window_id) {
-        bool has_name_pixmap = x11_supports_composite_named_window_pixmap(dpy);
-        if (!has_name_pixmap) {
-            fprintf(stderr, "Error: XCompositeNameWindowPixmap is not supported by "
-                            "your X11 server\n");
-            return 1;
-        }
-
-        XWindowAttributes attr;
-        if (!XGetWindowAttributes(dpy, src_window_id, &attr)) {
-            fprintf(stderr, "Error: Invalid window id: %lu\n", src_window_id);
-            return 1;
-        }
-
-        window_width = std::max(0, attr.width);
-        window_height = std::max(0, attr.height);
-        window_x = attr.x;
-        window_y = attr.y;
-        Window c;    
-        XTranslateCoordinates(dpy, src_window_id, DefaultRootWindow(dpy), 0, 0, &window_x, &window_y, &c);
-
-        XCompositeRedirectWindow(dpy, src_window_id, CompositeRedirectAutomatic);
-
-        if(!gl.load()) {
-            fprintf(stderr, "Error: Failed to load opengl\n");
-            return 1;
-        }
-
-        window = create_opengl_window(dpy);
-        if(!window)
-            return 1;
-
-        set_vertical_sync_enabled(dpy, window, false);
-        recreate_window_pixmap(dpy, src_window_id, window_pixmap);
-
-        if(!record_area) {
-            record_width = window_pixmap.texture_width;
-            record_height = window_pixmap.texture_height;
-            fprintf(stderr, "Record size: %dx%d\n", record_width, record_height);
-        }
-    } else {
-        window_pixmap.texture_id = 0;
-        window_pixmap.target_texture_id = 0;
-        window_pixmap.texture_width = window_width;
-        window_pixmap.texture_height = window_height;
-    }
-
-    bool very_old_gpu = false;
-    bool gl_loaded = window;
-    if(!gl_loaded) {
-        if(!gl.load()) {
-            fprintf(stderr, "Error: Failed to load opengl\n");
-            return 1;
-        }
-    }
-
-    const unsigned char *gl_renderer = gl.glGetString(GL_RENDERER);
-    if(gl_renderer) {
-        int gpu_num = 1000;
-        sscanf((const char*)gl_renderer, "%*s %*s %*s %d", &gpu_num);
-        if(gpu_num < 900) {
-            fprintf(stderr, "Info: your gpu appears to be very old (older than maxwell architecture). Switching to lower preset\n");
-            very_old_gpu = true;
-        }
-    }
-
-    if(!gl_loaded)
-        gl.unload();
-
     if(strcmp(codec_to_use, "auto") == 0) {
         const AVCodec *h265_codec = find_h265_encoder();
 
@@ -1583,6 +918,12 @@ int main(int argc, char **argv) {
             codec_to_use = "h265";
             video_codec = VideoCodec::H265;
         }
+    }
+
+    //bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
+    if(video_codec != VideoCodec::H264 && strcmp(container_format, "flv") == 0) {
+        video_codec = VideoCodec::H264;
+        fprintf(stderr, "Warning: h265 is not compatible with flv, falling back to h264 instead.\n");
     }
 
     const AVCodec *video_codec_f = nullptr;
@@ -1623,22 +964,19 @@ int main(int argc, char **argv) {
         requested_audio_inputs.push_back({ "", "gsr-silent" });
     }
 
-    //bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
-    if(video_codec != VideoCodec::H264 && strcmp(container_format, "flv") == 0) {
-        video_codec = VideoCodec::H264;
-        fprintf(stderr, "Warning: h265 is not compatible with flv, falling back to h264 instead.\n");
-    }
-
     AVStream *video_stream = nullptr;
     std::vector<AudioTrack> audio_tracks;
 
-    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, record_width, record_height, fps, video_codec_f, is_livestream);
+    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, fps, video_codec_f, is_livestream);
     if(replay_buffer_size_secs == -1)
         video_stream = create_stream(av_format_context, video_codec_context);
 
-    AVBufferRef *device_ctx;
-    CUgraphicsResource cuda_graphics_resource;
-    open_video(video_codec_context, window_pixmap, &device_ctx, &cuda_graphics_resource, cu_ctx, !src_window_id, quality, is_livestream, very_old_gpu);
+    if(gsr_capture_start(capture, video_codec_context) != 0) {
+        fprintf(stderr, "gsr error: gsr_capture_start failed\n");
+        return 1;
+    }
+
+    open_video(video_codec_context, quality, very_old_gpu);
     if(video_stream)
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
@@ -1668,9 +1006,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    //video_stream->duration = AV_TIME_BASE * 15;
-    //audio_stream->duration = AV_TIME_BASE * 15;
-    //av_format_context->duration = AV_TIME_BASE * 15;
     if(replay_buffer_size_secs == -1) {
         int ret = avformat_write_header(av_format_context, nullptr);
         if (ret < 0) {
@@ -1679,51 +1014,11 @@ int main(int argc, char **argv) {
         }
     }
 
-    // av_frame_free(&rgb_frame);
-    // avcodec_close(av_codec_context);
-
-    if(src_window_id)
-        XSelectInput(dpy, src_window_id, StructureNotifyMask | ExposureMask);
-
-    /*
-    int damage_event;
-    int damage_error;
-    if (!XDamageQueryExtension(dpy, &damage_event, &damage_error)) {
-        fprintf(stderr, "Error: XDamage is not supported by your X11 server\n");
-        return 1;
-    }
-
-    Damage damage = XDamageCreate(dpy, src_window_id, XDamageReportNonEmpty);
-    XDamageSubtract(dpy, damage,None,None);
-    */
-
     const double start_time_pts = clock_get_monotonic_seconds();
-
-    CUcontext old_ctx;
-    CUarray mapped_array;
-    if(src_window_id) {
-        res = cuda.cuCtxPopCurrent_v2(&old_ctx);
-        res = cuda.cuCtxPushCurrent_v2(cu_ctx);
-
-        // Get texture
-        res = cuda.cuGraphicsResourceSetMapFlags(
-            cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
-        res = cuda.cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
-
-        // Map texture to cuda array
-        res = cuda.cuGraphicsSubResourceGetMappedArray(&mapped_array,
-                                                cuda_graphics_resource, 0, 0);
-    }
-
-    // Release texture
-    // res = cuGraphicsUnmapResources(1, &cuda_graphics_resource, 0);
 
     double start_time = clock_get_monotonic_seconds();
     double frame_timer_start = start_time;
-    double window_resize_timer = start_time;
-    bool window_resized = false;
     int fps_counter = 0;
-    int current_fps = 30;
 
     AVFrame *frame = av_frame_alloc();
     if (!frame) {
@@ -1734,26 +1029,12 @@ int main(int argc, char **argv) {
     frame->width = video_codec_context->width;
     frame->height = video_codec_context->height;
 
-    if(src_window_id) {
-        if (av_hwframe_get_buffer(video_codec_context->hw_frames_ctx, frame, 0) < 0) {
-            fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
-            exit(1);
-        }
-    } else {
+    if(video_codec_context->hw_frames_ctx) {
+        // TODO: Unref at the end?
         frame->hw_frames_ctx = av_buffer_ref(video_codec_context->hw_frames_ctx);
         frame->buf[0] = av_buffer_pool_get(((AVHWFramesContext*)video_codec_context->hw_frames_ctx->data)->pool);
         frame->extended_data = frame->data;
     }
-
-    if(window_pixmap.texture_width < record_width)
-        frame->width = window_pixmap.texture_width & ~1;
-    else
-        frame->width = record_width & ~1;
-
-    if(window_pixmap.texture_height < record_height)
-        frame->height = window_pixmap.texture_height & ~1;
-    else
-        frame->height = record_height & ~1;
 
     std::mutex write_output_mutex;
 
@@ -1882,108 +1163,20 @@ int main(int argc, char **argv) {
         }, av_format_context, &write_output_mutex);
     }
 
-    started = 1;
-
     // Set update_fps to 24 to test if duplicate/delayed frames cause video/audio desync or too fast/slow video.
     const double update_fps = fps + 190;
     int64_t video_pts_counter = 0;
+    bool should_stop_error = false;
 
-    bool redraw = true;
-    XEvent e;
     while (running) {
         double frame_start = clock_get_monotonic_seconds();
-        if(window)
-            gl.glClear(GL_COLOR_BUFFER_BIT);
 
-        redraw = true;
-
-        if(src_window_id) {
-            if (XCheckTypedWindowEvent(dpy, src_window_id, DestroyNotify, &e)) {
-                running = 0;
-            }
-
-            if (XCheckTypedWindowEvent(dpy, src_window_id, Expose, &e) && e.xexpose.count == 0) {
-                window_resize_timer = clock_get_monotonic_seconds();
-                window_resized = true;
-            }
-
-            if (XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e) && e.xconfigure.window == src_window_id) {
-                while(XCheckTypedWindowEvent(dpy, src_window_id, ConfigureNotify, &e)) {}
-                window_x = e.xconfigure.x;
-                window_y = e.xconfigure.y;
-                Window c;
-                XTranslateCoordinates(dpy, src_window_id, DefaultRootWindow(dpy), 0, 0, &window_x, &window_y, &c);
-                // Window resize
-                if(e.xconfigure.width != (int)window_width || e.xconfigure.height != (int)window_height) {
-                    window_width = std::max(0, e.xconfigure.width);
-                    window_height = std::max(0, e.xconfigure.height);
-                    window_resize_timer = clock_get_monotonic_seconds();
-                    window_resized = true;
-                }
-            }
-
-            const double window_resize_timeout = 1.0; // 1 second
-            if(window_resized && clock_get_monotonic_seconds() - window_resize_timer >= window_resize_timeout) {
-                window_resized = false;
-                fprintf(stderr, "Resize window!\n");
-                recreate_window_pixmap(dpy, src_window_id, window_pixmap);
-                // Resolution must be a multiple of two
-                //video_stream->codec->width = window_pixmap.texture_width & ~1;
-                //video_stream->codec->height = window_pixmap.texture_height & ~1;
-
-                cuda.cuGraphicsUnregisterResource(cuda_graphics_resource);
-                res = cuda.cuGraphicsGLRegisterImage(
-                    &cuda_graphics_resource, window_pixmap.target_texture_id, GL_TEXTURE_2D,
-                    CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
-                if (res != CUDA_SUCCESS) {
-                    const char *err_str;
-                    cuda.cuGetErrorString(res, &err_str);
-                    fprintf(stderr,
-                            "Error: cuda.cuGraphicsGLRegisterImage failed, error %s, texture "
-                            "id: %u\n",
-                            err_str, window_pixmap.target_texture_id);
-                    running = false;
-                    break;
-                }
-
-                res = cuda.cuGraphicsResourceSetMapFlags(
-                    cuda_graphics_resource, CU_GRAPHICS_MAP_RESOURCE_FLAGS_READ_ONLY);
-                res = cuda.cuGraphicsMapResources(1, &cuda_graphics_resource, 0);
-                res = cuda.cuGraphicsSubResourceGetMappedArray(&mapped_array, cuda_graphics_resource, 0, 0);
-
-                av_frame_free(&frame);
-                frame = av_frame_alloc();
-                if (!frame) {
-                    fprintf(stderr, "Error: Failed to allocate frame\n");
-                    running = false;
-                    break;
-                }
-                frame->format = video_codec_context->pix_fmt;
-                frame->width = video_codec_context->width;
-                frame->height = video_codec_context->height;
-
-                if (av_hwframe_get_buffer(video_codec_context->hw_frames_ctx, frame, 0) < 0) {
-                    fprintf(stderr, "Error: av_hwframe_get_buffer failed\n");
-                    running = false;
-                    break;
-                }
-
-                if(window_pixmap.texture_width < record_width)
-                    frame->width = window_pixmap.texture_width & ~1;
-                else
-                    frame->width = record_width & ~1;
-
-                if(window_pixmap.texture_height < record_height)
-                    frame->height = window_pixmap.texture_height & ~1;
-                else
-                    frame->height = record_height & ~1;
-
-                // Make the new completely black to clear unused parts
-                // TODO: cuMemsetD32?
-                cuda.cuMemsetD8_v2((CUdeviceptr)frame->data[0], 0, record_width * record_height * 4);
-            }
+        gsr_capture_tick(capture, video_codec_context, &frame);
+        should_stop_error = false;
+        if(gsr_capture_should_stop(capture, &should_stop_error)) {
+            running = 0;
+            break;
         }
-
         ++fps_counter;
 
         double time_now = clock_get_monotonic_seconds();
@@ -1992,110 +1185,13 @@ int main(int argc, char **argv) {
         if (elapsed >= 1.0) {
             fprintf(stderr, "update fps: %d\n", fps_counter);
             start_time = time_now;
-            current_fps = fps_counter;
             fps_counter = 0;
         }
 
         double frame_time_overflow = frame_timer_elapsed - target_fps;
         if (frame_time_overflow >= 0.0) {
             frame_timer_start = time_now - frame_time_overflow;
-
-            bool frame_captured = true;
-            if(redraw) {
-                redraw = false;
-                if(src_window_id) {
-                    // TODO: Use a framebuffer instead. glCopyImageSubData requires
-                    // opengl 4.2
-                    int source_x = 0;
-                    int source_y = 0;
-
-                    int source_width = window_pixmap.texture_width;
-                    int source_height = window_pixmap.texture_height;
-
-                    bool clamped = false;
-
-                    if(window_pixmap.composite_window) {
-                        source_x = window_x;
-                        source_y = window_y;
-
-                        int underflow_x = 0;
-                        int underflow_y = 0;
-
-                        if(source_x < 0) {
-                            underflow_x = -source_x;
-                            source_x = 0;
-                            source_width += source_x;
-                        }
-
-                        if(source_y < 0) {
-                            underflow_y = -source_y;
-                            source_y = 0;
-                            source_height += source_y;
-                        }
-
-                        const int clamped_source_width = std::max(0, window_pixmap.texture_real_width - source_x - underflow_x);
-                        const int clamped_source_height = std::max(0, window_pixmap.texture_real_height - source_y - underflow_y);
-
-                        if(clamped_source_width < source_width) {
-                            source_width = clamped_source_width;
-                            clamped = true;
-                        }
-
-                        if(clamped_source_height < source_height) {
-                            source_height = clamped_source_height;
-                            clamped = true;
-                        }
-                    }
-
-                    if(clamped) {
-                        // Requires opengl 4.4... TODO: Replace with earlier opengl if opengl < 4.2
-                        if(gl.glClearTexImage)
-                            gl.glClearTexImage(window_pixmap.target_texture_id, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
-                    }
-
-                    // Requires opengl 4.2... TODO: Replace with earlier opengl if opengl < 4.2
-                    gl.glCopyImageSubData(
-                        window_pixmap.texture_id, GL_TEXTURE_2D, 0, source_x, source_y, 0,
-                        window_pixmap.target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-                        source_width, source_height, 1);
-                    unsigned int err = gl.glGetError();
-                    if(err != 0) {
-                        static bool error_shown = false;
-                        if(!error_shown) {
-                            error_shown = true;
-                            fprintf(stderr, "Error: glCopyImageSubData failed, gl error: %d\n", err);
-                        }
-                    }
-                    gl.glXSwapBuffers(dpy, window);
-                    // int err = gl.glGetError();
-                    // fprintf(stderr, "error: %d\n", err);
-
-                    // TODO: Remove this copy, which is only possible by using nvenc directly and encoding window_pixmap.target_texture_id
-
-                    frame->linesize[0] = frame->width * 4;
-
-                    CUDA_MEMCPY2D memcpy_struct;
-                    memcpy_struct.srcXInBytes = 0;
-                    memcpy_struct.srcY = 0;
-                    memcpy_struct.srcMemoryType = CUmemorytype::CU_MEMORYTYPE_ARRAY;
-
-                    memcpy_struct.dstXInBytes = 0;
-                    memcpy_struct.dstY = 0;
-                    memcpy_struct.dstMemoryType = CUmemorytype::CU_MEMORYTYPE_DEVICE;
-
-                    memcpy_struct.srcArray = mapped_array;
-                    memcpy_struct.dstDevice = (CUdeviceptr)frame->data[0];
-                    memcpy_struct.dstPitch = frame->linesize[0];
-                    memcpy_struct.WidthInBytes = frame->width * 4;
-                    memcpy_struct.Height = frame->height;
-                    cuda.cuMemcpy2D_v2(&memcpy_struct);
-
-                    frame_captured = true;
-                } else {
-                    gsr_capture_capture(capture, frame);
-                }
-                // res = cuda.cuCtxPopCurrent_v2(&old_ctx);
-            }
+            gsr_capture_capture(capture, frame);
 
             const double this_video_frame_time = clock_get_monotonic_seconds();
             const int64_t expected_frames = std::round((this_video_frame_time - start_time_pts) / target_fps);
@@ -2152,12 +1248,11 @@ int main(int argc, char **argv) {
     if(replay_buffer_size_secs == -1 && !(output_format->flags & AVFMT_NOFILE))
         avio_close(av_format_context->pb);
 
-    if(capture)
-        gsr_capture_destroy(capture);
+    gsr_capture_destroy(capture, video_codec_context);
 
     if(dpy)
         XCloseDisplay(dpy);
 
-    unlink(pid_file);
     free(empty_audio);
+    return should_stop_error ? 3 : 0;
 }

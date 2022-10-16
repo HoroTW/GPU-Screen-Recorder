@@ -38,7 +38,7 @@ Send signal SIGUSR1 (`killall -SIGUSR1 gpu-screen-recorder`) to gpu-screen-recor
 You can find the default output audio device (headset, speakers (in other words, desktop audio)) with the command `pactl get-default-sink`. Add `monitor` to the end of that to use that as an audio input in gpu-screen-recorder.\
 You can find the default input audio device (microphone) with the command `pactl get-default-source`. This input should not have `monitor` added to the end when used in gpu-screen-recorder.\
 Example of recording both desktop audio and microphone: `gpu-screen-recorder -w $(xdotool selectwindow) -c mp4 -f 60 -a "$(pactl get-default-sink).monitor" -a "$(pactl get-default-source)" -o test_video.mp4`.\
-Note that if you use multiple audio inputs then they are each recorded into separate audio tracks in the video file. There is currently no option to merge audio tracks, but it's a planned feature.
+Note that if you use multiple audio inputs then they are each recorded into separate audio tracks in the video file. There is currently no option to merge audio tracks, but it's a planned feature. For now I recommend using gpwgraph if you are using pipewire. Gpwgraph allows you to merge multiple audio inputs into one with a simple gui. If you use pulseaudio then you need to create a virtual sink, which is a bit more complex.
 
 There is also a gui for the gpu-screen-recorder called [gpu-screen-recorder-gtk](https://git.dec05eba.com/gpu-screen-recorder-gtk/).
 

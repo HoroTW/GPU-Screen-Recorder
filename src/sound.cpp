@@ -1,21 +1,7 @@
-/*
-    Copyright (C) 2020 dec05eba
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
-
 #include "../include/sound.hpp"
+extern "C" {
+#include "../include/time.h"
+}
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -42,14 +28,6 @@
             goto label;                                                 \
         }                                                               \
     } while(false);
-
-static double clock_get_monotonic_seconds() {
-    struct timespec ts;
-    ts.tv_sec = 0;
-    ts.tv_nsec = 0;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 0.000000001;
-}
 
 struct pa_handle {
     pa_context *context;

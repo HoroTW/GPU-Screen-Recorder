@@ -14,3 +14,4 @@ Resizing the target window to be smaller than the initial size is buggy. The win
 Handle frames (especially for applications with rounded client-side decorations, such as gnome applications. They are huge).
 Use nvenc directly, which allows removing the use of cuda.
 Fallback to nvfbc and window tracking if window capture fails.
+Handle xrandr monitor change in nvfbc.

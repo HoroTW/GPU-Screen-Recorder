@@ -4,8 +4,11 @@
 #include "capture.h"
 #include "../vec2.h"
 
+typedef struct _XDisplay Display;
+
 typedef struct {
-    const char *display_to_capture; /* if this is "screen", then the entire x11 screen is captured (all displays) */
+    Display *dpy;
+    const char *display_to_capture; /* if this is "screen", then the entire x11 screen is captured (all displays). A copy is made of this */
     int fps;
     vec2i pos;
     vec2i size;

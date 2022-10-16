@@ -1,9 +1,8 @@
-#pragma once
+#ifndef GSR_CUDA_H
+#define GSR_CUDA_H
 
-#include "LibraryLoader.hpp"
-
-#include <dlfcn.h>
-#include <stdio.h>
+#include <stddef.h>
+#include <stdbool.h>
 
 // To prevent hwcontext_cuda.h from including cuda.h
 #define CUDA_VERSION 11070
@@ -22,7 +21,7 @@ typedef struct CUctx_st *CUcontext;
 typedef struct CUstream_st *CUstream;
 typedef struct CUarray_st *CUarray;
 
-static const int CUDA_SUCCESS = 0;
+#define CUDA_SUCCESS 0
 
 typedef enum CUgraphicsMapResourceFlags_enum {
     CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE          = 0x00,
@@ -69,15 +68,19 @@ typedef struct CUDA_MEMCPY2D_st {
 } CUDA_MEMCPY2D_v2;
 typedef CUDA_MEMCPY2D_v2 CUDA_MEMCPY2D;
 
-static const int CU_CTX_SCHED_AUTO = 0;
+#define CU_CTX_SCHED_AUTO 0
 
 typedef struct CUgraphicsResource_st *CUgraphicsResource;
 
-struct Cuda {
+typedef struct {
+    void *library;
+    CUcontext cu_ctx;
+
     CUresult (*cuInit)(unsigned int Flags);
     CUresult (*cuDeviceGetCount)(int *count);
     CUresult (*cuDeviceGet)(CUdevice *device, int ordinal);
     CUresult (*cuCtxCreate_v2)(CUcontext *pctx, unsigned int flags, CUdevice dev);
+    CUresult (*cuCtxDestroy_v2)(CUcontext ctx);
     CUresult (*cuCtxPushCurrent_v2)(CUcontext ctx);
     CUresult (*cuCtxPopCurrent_v2)(CUcontext *pctx);
     CUresult (*cuGetErrorString)(CUresult error, const char **pStr);
@@ -87,57 +90,12 @@ struct Cuda {
     CUresult (*cuGraphicsGLRegisterImage)(CUgraphicsResource *pCudaResource, unsigned int image, unsigned int target, unsigned int Flags);
     CUresult (*cuGraphicsResourceSetMapFlags)(CUgraphicsResource resource, unsigned int flags);
     CUresult (*cuGraphicsMapResources)(unsigned int count, CUgraphicsResource *resources, CUstream hStream);
+    CUresult (*cuGraphicsUnmapResources)(unsigned int count, CUgraphicsResource *resources, CUstream hStream);
     CUresult (*cuGraphicsUnregisterResource)(CUgraphicsResource resource);
     CUresult (*cuGraphicsSubResourceGetMappedArray)(CUarray *pArray, CUgraphicsResource resource, unsigned int arrayIndex, unsigned int mipLevel);
+} gsr_cuda;
 
-    ~Cuda() {
-        if(library)
-            dlclose(library);
-    }
+bool gsr_cuda_load(gsr_cuda *self);
+void gsr_cuda_unload(gsr_cuda *self);
 
-    bool load() {
-        if(library)
-            return true;
-
-        dlerror(); // clear
-        void *lib = dlopen("libcuda.so.1", RTLD_LAZY);
-        if(!lib) {
-            lib = dlopen("libcuda.so", RTLD_LAZY);
-            if(!lib) {
-                fprintf(stderr, "Error: failed to load libcuda.so/libcuda.so.1, error: %s\n", dlerror());
-                return false;
-            }
-        }
-
-        dlsym_assign required_dlsym[] = {
-            { (void**)&cuInit, "cuInit" },
-            { (void**)&cuDeviceGetCount, "cuDeviceGetCount" },
-            { (void**)&cuDeviceGet, "cuDeviceGet" },
-            { (void**)&cuCtxCreate_v2, "cuCtxCreate_v2" },
-            { (void**)&cuCtxPushCurrent_v2, "cuCtxPushCurrent_v2" },
-            { (void**)&cuCtxPopCurrent_v2, "cuCtxPopCurrent_v2" },
-            { (void**)&cuGetErrorString, "cuGetErrorString" },
-            { (void**)&cuMemsetD8_v2, "cuMemsetD8_v2" },
-            { (void**)&cuMemcpy2D_v2, "cuMemcpy2D_v2" },
-
-            { (void**)&cuGraphicsGLRegisterImage, "cuGraphicsGLRegisterImage" },
-            { (void**)&cuGraphicsResourceSetMapFlags, "cuGraphicsResourceSetMapFlags" },
-            { (void**)&cuGraphicsMapResources, "cuGraphicsMapResources" },
-            { (void**)&cuGraphicsUnregisterResource, "cuGraphicsUnregisterResource" },
-            { (void**)&cuGraphicsSubResourceGetMappedArray, "cuGraphicsSubResourceGetMappedArray" },
-
-            { NULL, NULL }
-        };
-
-        if(dlsym_load_list(lib, required_dlsym)) {
-            library = lib;
-            return true;
-        } else {
-            fprintf(stderr, "Error: missing required symbols in libcuda.so\n");
-            dlclose(lib);
-            return false;
-        }
-    }
-private:
-    void *library = nullptr;
-};
+#endif /* GSR_CUDA_H */

@@ -1,11 +1,11 @@
-#pragma once
+#ifndef GSR_GL_H
+#define GSR_GL_H
 
-#include "LibraryLoader.hpp"
+/* OpenGL library with a hidden window context (to allow using the opengl functions) */
 
 #include <X11/X.h>
 #include <X11/Xutil.h>
-#include <dlfcn.h>
-#include <stdio.h>
+#include <stdbool.h>
 
 typedef XID GLXPixmap;
 typedef XID GLXDrawable;
@@ -25,6 +25,8 @@ typedef struct __GLXFBConfigRec *GLXFBConfig;
 #define GL_TEXTURE_WIDTH                        0x1000
 #define GL_TEXTURE_HEIGHT                       0x1001
 #define GL_NEAREST                              0x2600
+#define GL_CLAMP_TO_EDGE                        0x812F
+#define GL_LINEAR                               0x2601
 
 #define GL_RENDERER                             0x1F01
 
@@ -54,7 +56,16 @@ typedef struct __GLXFBConfigRec *GLXFBConfig;
 #define GLX_CONTEXT_MINOR_VERSION_ARB           0x2092
 #define GLX_CONTEXT_FLAGS_ARB                   0x2094
 
-struct GlLibrary {
+typedef struct {
+    void *library;
+    Display *dpy;
+    GLXFBConfig *fbconfigs;
+    XVisualInfo *visual_info;
+    GLXFBConfig fbconfig;
+    Colormap colormap;
+    GLXContext gl_context;
+    Window window;
+
     GLXPixmap (*glXCreatePixmap)(Display *dpy, GLXFBConfig config, Pixmap pixmap, const int *attribList);
     void (*glXDestroyPixmap)(Display *dpy, GLXPixmap pixmap);
     void (*glXBindTexImageEXT)(Display *dpy, GLXDrawable drawable, int buffer, const int *attrib_list);
@@ -82,75 +93,10 @@ struct GlLibrary {
     void (*glGetTexLevelParameteriv)(unsigned int target, int level, unsigned int pname, int *params);
     void (*glTexImage2D)(unsigned int target, int level, int internalFormat, int width, int height, int border, unsigned int format, unsigned int type, const void *pixels);
     void (*glCopyImageSubData)(unsigned int srcName, unsigned int srcTarget, int srcLevel, int srcX, int srcY, int srcZ, unsigned int dstName, unsigned int dstTarget, int dstLevel, int dstX, int dstY, int dstZ, int srcWidth, int srcHeight, int srcDepth);
+} gsr_gl;
 
-    ~GlLibrary() {
-        unload();
-    }
+bool gsr_gl_load(gsr_gl *self, Display *dpy);
+bool gsr_gl_make_context_current(gsr_gl *self);
+void gsr_gl_unload(gsr_gl *self);
 
-    bool load() {
-        if(library)
-            return true;
-
-        dlerror(); // clear
-        void *lib = dlopen("libGL.so.1", RTLD_LAZY);
-        if(!lib) {
-            fprintf(stderr, "Error: failed to load libGL.so.1, error: %s\n", dlerror());
-            return false;
-        }
-
-        dlsym_assign optional_dlsym[] = {
-            { (void**)&glClearTexImage, "glClearTexImage" },
-            { (void**)&glXSwapIntervalEXT, "glXSwapIntervalEXT" },
-            { (void**)&glXSwapIntervalMESA, "glXSwapIntervalMESA" },
-            { (void**)&glXSwapIntervalSGI, "glXSwapIntervalSGI" },
-
-            { NULL, NULL }
-        };
-
-        dlsym_load_list_optional(lib, optional_dlsym);
-
-        dlsym_assign required_dlsym[] = {
-            { (void**)&glXCreatePixmap, "glXCreatePixmap" },
-            { (void**)&glXDestroyPixmap, "glXDestroyPixmap" },
-            { (void**)&glXBindTexImageEXT, "glXBindTexImageEXT" },
-            { (void**)&glXReleaseTexImageEXT, "glXReleaseTexImageEXT" },
-            { (void**)&glXChooseFBConfig, "glXChooseFBConfig" },
-            { (void**)&glXGetVisualFromFBConfig, "glXGetVisualFromFBConfig" },
-            { (void**)&glXCreateContextAttribsARB, "glXCreateContextAttribsARB" },
-            { (void**)&glXMakeContextCurrent, "glXMakeContextCurrent" },
-            { (void**)&glXDestroyContext, "glXDestroyContext" },
-            { (void**)&glXSwapBuffers, "glXSwapBuffers" },
-
-            { (void**)&glGetError, "glGetError" },
-            { (void**)&glGetString, "glGetString" },
-            { (void**)&glClear, "glClear" },
-            { (void**)&glGenTextures, "glGenTextures" },
-            { (void**)&glDeleteTextures, "glDeleteTextures" },
-            { (void**)&glBindTexture, "glBindTexture" },
-            { (void**)&glTexParameteri, "glTexParameteri" },
-            { (void**)&glGetTexLevelParameteriv, "glGetTexLevelParameteriv" },
-            { (void**)&glTexImage2D, "glTexImage2D" },
-            { (void**)&glCopyImageSubData, "glCopyImageSubData" },
-
-            { NULL, NULL }
-        };
-
-        if(dlsym_load_list(lib, required_dlsym)) {
-            library = lib;
-            return true;
-        } else {
-            fprintf(stderr, "Error: missing required symbols in libGL.so.1\n");
-            dlclose(lib);
-            return false;
-        }
-    }
-
-    void unload() {
-        if(library) {
-            dlclose(library);
-            library = nullptr;
-        }
-    }
-private:
-    void *library = nullptr;
-};
+#endif /* GSR_GL_H */

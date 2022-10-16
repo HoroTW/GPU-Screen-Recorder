@@ -1,10 +1,16 @@
 #include "../../include/capture/nvfbc.h"
 #include "../../external/NvFBC.h"
+#include "../../include/cuda.h"
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <X11/Xlib.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_cuda.h>
 #include <libavutil/frame.h>
+#include <libavutil/version.h>
+#include <libavcodec/avcodec.h>
 
 typedef struct {
     gsr_capture_nvfbc_params params;
@@ -14,6 +20,8 @@ typedef struct {
     PNVFBCCREATEINSTANCE nv_fbc_create_instance;
     NVFBC_API_FUNCTION_LIST nv_fbc_function_list;
     bool fbc_handle_created;
+
+    gsr_cuda cuda;
 } gsr_capture_nvfbc;
 
 #if defined(_WIN64) || defined(__LP64__)
@@ -28,13 +36,16 @@ static int max_int(int a, int b) {
 }
 
 /* Returns 0 on failure */
-static uint32_t get_output_id_from_display_name(NVFBC_RANDR_OUTPUT_INFO *outputs, uint32_t num_outputs, const char *display_name) {
+static uint32_t get_output_id_from_display_name(NVFBC_RANDR_OUTPUT_INFO *outputs, uint32_t num_outputs, const char *display_name, uint32_t *width, uint32_t *height) {
     if(!outputs)
         return 0;
 
     for(uint32_t i = 0; i < num_outputs; ++i) {
-        if(strcmp(outputs[i].name, display_name) == 0) 
+        if(strcmp(outputs[i].name, display_name) == 0) {
+            *width = outputs[i].trackedBox.w;
+            *height = outputs[i].trackedBox.h;
             return outputs[i].dwId;
+        }
     }
 
     return 0;
@@ -95,15 +106,77 @@ static bool gsr_capture_nvfbc_load_library(gsr_capture *cap) {
     return true;
 }
 
-static int gsr_capture_nvfbc_start(gsr_capture *cap) {
+#if LIBAVUTIL_VERSION_MAJOR < 57
+static AVBufferRef* dummy_hw_frame_init(int size) {
+    return av_buffer_alloc(size);
+}
+#else
+static AVBufferRef* dummy_hw_frame_init(size_t size) {
+    return av_buffer_alloc(size);
+}
+#endif
+
+static bool ffmpeg_create_cuda_contexts(gsr_capture_nvfbc *cap_nvfbc, AVCodecContext *video_codec_context) {
+    AVBufferRef *device_ctx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
+    if(!device_ctx) {
+        fprintf(stderr, "gsr error: cuda_create_codec_context failed: failed to create hardware device context\n");
+        return false;
+    }
+
+    AVHWDeviceContext *hw_device_context = (AVHWDeviceContext*)device_ctx->data;
+    AVCUDADeviceContext *cuda_device_context = (AVCUDADeviceContext*)hw_device_context->hwctx;
+    cuda_device_context->cuda_ctx = cap_nvfbc->cuda.cu_ctx;
+    if(av_hwdevice_ctx_init(device_ctx) < 0) {
+        fprintf(stderr, "gsr error: cuda_create_codec_context failed: failed to create hardware device context\n");
+        av_buffer_unref(&device_ctx);
+        return false;
+    }
+
+    AVBufferRef *frame_context = av_hwframe_ctx_alloc(device_ctx);
+    if(!frame_context) {
+        fprintf(stderr, "gsr error: cuda_create_codec_context failed: failed to create hwframe context\n");
+        av_buffer_unref(&device_ctx);
+        return false;
+    }
+
+    AVHWFramesContext *hw_frame_context = (AVHWFramesContext*)frame_context->data;
+    hw_frame_context->width = video_codec_context->width;
+    hw_frame_context->height = video_codec_context->height;
+    hw_frame_context->sw_format = AV_PIX_FMT_0RGB32;
+    hw_frame_context->format = video_codec_context->pix_fmt;
+    hw_frame_context->device_ref = device_ctx;
+    hw_frame_context->device_ctx = (AVHWDeviceContext*)device_ctx->data;
+
+    hw_frame_context->pool = av_buffer_pool_init(1, dummy_hw_frame_init);
+    hw_frame_context->initial_pool_size = 1;
+
+    if (av_hwframe_ctx_init(frame_context) < 0) {
+        fprintf(stderr, "gsr error: cuda_create_codec_context failed: failed to initialize hardware frame context "
+                        "(note: ffmpeg version needs to be > 4.0)\n");
+        av_buffer_unref(&device_ctx);
+        av_buffer_unref(&frame_context);
+        return false;
+    }
+
+    video_codec_context->hw_device_ctx = device_ctx;
+    video_codec_context->hw_frames_ctx = frame_context;
+    return true;
+}
+
+static int gsr_capture_nvfbc_start(gsr_capture *cap, AVCodecContext *video_codec_context) {
     gsr_capture_nvfbc *cap_nvfbc = cap->priv;
+    if(!gsr_cuda_load(&cap_nvfbc->cuda))
+        return -1;
+
+    if(!gsr_capture_nvfbc_load_library(cap)) {
+        gsr_cuda_unload(&cap_nvfbc->cuda);
+        return -1;
+    }
+
     const uint32_t x = max_int(cap_nvfbc->params.pos.x, 0);
     const uint32_t y = max_int(cap_nvfbc->params.pos.y, 0);
     const uint32_t width = max_int(cap_nvfbc->params.size.x, 0);
     const uint32_t height = max_int(cap_nvfbc->params.size.y, 0);
-
-    if(!cap_nvfbc->library || !cap_nvfbc->params.display_to_capture || cap_nvfbc->fbc_handle_created)
-        return -1;
 
     const bool capture_region = (x > 0 || y > 0 || width > 0 || height > 0);
 
@@ -127,7 +200,7 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap) {
         status = cap_nvfbc->nv_fbc_function_list.nvFBCCreateHandle(&cap_nvfbc->nv_fbc_handle, &create_params);
         if(status != NVFBC_SUCCESS) {
             fprintf(stderr, "gsr error: gsr_capture_nvfbc_start failed: %s\n", cap_nvfbc->nv_fbc_function_list.nvFBCGetLastErrorStr(cap_nvfbc->nv_fbc_handle));
-            return -1;
+            goto error_cleanup;
         }
     }
     cap_nvfbc->fbc_handle_created = true;
@@ -147,6 +220,8 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap) {
         goto error_cleanup;
     }
 
+    uint32_t tracking_width = XWidthOfScreen(DefaultScreenOfDisplay(cap_nvfbc->params.dpy));
+    uint32_t tracking_height = XHeightOfScreen(DefaultScreenOfDisplay(cap_nvfbc->params.dpy));
     tracking_type = strcmp(cap_nvfbc->params.display_to_capture, "screen") == 0 ? NVFBC_TRACKING_SCREEN : NVFBC_TRACKING_OUTPUT;
     if(tracking_type == NVFBC_TRACKING_OUTPUT) {
         if(!status_params.bXRandRAvailable) {
@@ -159,7 +234,7 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap) {
             goto error_cleanup;
         }
 
-        output_id = get_output_id_from_display_name(status_params.outputs, status_params.dwOutputNum, cap_nvfbc->params.display_to_capture);
+        output_id = get_output_id_from_display_name(status_params.outputs, status_params.dwOutputNum, cap_nvfbc->params.display_to_capture, &tracking_width, &tracking_height);
         if(output_id == 0) {
             fprintf(stderr, "gsr error: gsr_capture_nvfbc_start failed: display '%s' not found\n", cap_nvfbc->params.display_to_capture);
             goto error_cleanup;
@@ -198,6 +273,17 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap) {
         goto error_cleanup;
     }
 
+    if(capture_region) {
+        video_codec_context->width = width & ~1;
+        video_codec_context->height = height & ~1;
+    } else {
+        video_codec_context->width = tracking_width & ~1;
+        video_codec_context->height = tracking_height & ~1;
+    }
+
+    if(!ffmpeg_create_cuda_contexts(cap_nvfbc, video_codec_context))
+        goto error_cleanup;
+
     return 0;
 
     error_cleanup:
@@ -215,16 +301,15 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap) {
         cap_nvfbc->nv_fbc_function_list.nvFBCDestroyHandle(cap_nvfbc->nv_fbc_handle, &destroy_params);
         cap_nvfbc->fbc_handle_created = false;
     }
-    output_id = 0;
+
+    av_buffer_unref(&video_codec_context->hw_device_ctx);
+    av_buffer_unref(&video_codec_context->hw_frames_ctx);
+    gsr_cuda_unload(&cap_nvfbc->cuda);
     return -1;
 }
 
-static void gsr_capture_nvfbc_stop(gsr_capture *cap) {
+static void gsr_capture_nvfbc_destroy_session(gsr_capture *cap) {
     gsr_capture_nvfbc *cap_nvfbc = cap->priv;
-
-    /* Intentionally ignore failure on destroy */
-    if(!cap_nvfbc->nv_fbc_handle)
-        return;
 
     NVFBC_DESTROY_CAPTURE_SESSION_PARAMS destroy_capture_params;
     memset(&destroy_capture_params, 0, sizeof(destroy_capture_params));
@@ -241,8 +326,6 @@ static void gsr_capture_nvfbc_stop(gsr_capture *cap) {
 
 static int gsr_capture_nvfbc_capture(gsr_capture *cap, AVFrame *frame) {
     gsr_capture_nvfbc *cap_nvfbc = cap->priv;
-    if(!cap_nvfbc->library || !cap_nvfbc->fbc_handle_created)
-        return -1;
 
     CUdeviceptr cu_device_ptr = 0;
 
@@ -274,23 +357,29 @@ static int gsr_capture_nvfbc_capture(gsr_capture *cap, AVFrame *frame) {
     return 0;
 }
 
-static void gsr_capture_nvfbc_destroy(gsr_capture *cap) {
-    if(cap) {
-        gsr_capture_nvfbc *cap_nvfbc = cap->priv;
-        gsr_capture_nvfbc_stop(cap);
-        if(cap_nvfbc) {
-            dlclose(cap_nvfbc->library);
-            free((void*)cap_nvfbc->params.display_to_capture);
-            free(cap->priv);
-            cap->priv = NULL;
-        }
-        free(cap);
+static void gsr_capture_nvfbc_destroy(gsr_capture *cap, AVCodecContext *video_codec_context) {
+    gsr_capture_nvfbc *cap_nvfbc = cap->priv;
+    gsr_capture_nvfbc_destroy_session(cap);
+    av_buffer_unref(&video_codec_context->hw_device_ctx);
+    av_buffer_unref(&video_codec_context->hw_frames_ctx);
+    if(cap_nvfbc) {
+        gsr_cuda_unload(&cap_nvfbc->cuda);
+        dlclose(cap_nvfbc->library);
+        free((void*)cap_nvfbc->params.display_to_capture);
+        free(cap->priv);
+        cap->priv = NULL;
     }
+    free(cap);
 }
 
 gsr_capture* gsr_capture_nvfbc_create(const gsr_capture_nvfbc_params *params) {
     if(!params) {
         fprintf(stderr, "gsr error: gsr_capture_nvfbc_create params is NULL\n");
+        return NULL;
+    }
+
+    if(!params->display_to_capture) {
+        fprintf(stderr, "gsr error: gsr_capture_nvfbc_create params.display_to_capture is NULL\n");
         return NULL;
     }
 
@@ -317,16 +406,12 @@ gsr_capture* gsr_capture_nvfbc_create(const gsr_capture_nvfbc_params *params) {
     
     *cap = (gsr_capture) {
         .start = gsr_capture_nvfbc_start,
-        .stop = gsr_capture_nvfbc_stop,
+        .tick = NULL,
+        .should_stop = NULL,
         .capture = gsr_capture_nvfbc_capture,
         .destroy = gsr_capture_nvfbc_destroy,
         .priv = cap_nvfbc
     };
-
-    if(!gsr_capture_nvfbc_load_library(cap)) {
-        gsr_capture_nvfbc_destroy(cap);
-        return NULL;
-    }
 
     return cap;
 }
