@@ -1,7 +1,8 @@
 extern "C" {
 #include "../include/capture/nvfbc.h"
-#include "../include/capture/xcomposite.h"
-#include "../include/gl.h"
+#include "../include/capture/xcomposite_cuda.h"
+#include "../include/capture/xcomposite_drm.h"
+#include "../include/egl.h"
 #include "../include/time.h"
 }
 
@@ -157,7 +158,10 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
             av_packet.stream_index = stream_index;
             av_packet.pts = av_packet.dts = frame->pts;
 
-			std::lock_guard<std::mutex> lock(write_output_mutex);
+            if(frame->flags & AV_FRAME_FLAG_DISCARD)
+                av_packet.flags |= AV_PKT_FLAG_DISCARD;
+
+            std::lock_guard<std::mutex> lock(write_output_mutex);
             if(replay_buffer_size_secs != -1) {
                 double time_now = clock_get_monotonic_seconds();
                 double replay_time_elapsed = time_now - replay_start_time;
@@ -170,15 +174,16 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
                     frame_data_queue.pop_front();
                     frames_erased = true;
                 }
+                av_packet_unref(&av_packet);
             } else {
                 av_packet_rescale_ts(&av_packet, av_codec_context->time_base, stream->time_base);
                 av_packet.stream_index = stream->index;
-                int ret = av_write_frame(av_format_context, &av_packet);
+                // TODO: Is av_interleaved_write_frame needed?
+                int ret = av_interleaved_write_frame(av_format_context, &av_packet);
                 if(ret < 0) {
                     fprintf(stderr, "Error: Failed to write frame index %d to muxer, reason: %s (%d)\n", av_packet.stream_index, av_error_to_string(ret), ret);
                 }
             }
-            av_packet_unref(&av_packet);
         } else if (res == AVERROR(EAGAIN)) { // we have no packet
                                              // fprintf(stderr, "No packet!\n");
             av_packet_unref(&av_packet);
@@ -195,7 +200,7 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
     }
 }
 
-static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_context, int fps) {
+static AVCodecContext* create_audio_codec_context(int fps) {
     const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
     if (!codec) {
         fprintf(
@@ -223,28 +228,12 @@ static AVCodecContext* create_audio_codec_context(AVFormatContext *av_format_con
     codec_context->time_base.den = codec_context->sample_rate;
     codec_context->framerate.num = fps;
     codec_context->framerate.den = 1;
-
-    av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     codec_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
     return codec_context;
 }
 
-static const AVCodec* find_h264_encoder() {
-    const AVCodec *codec = avcodec_find_encoder_by_name("h264_nvenc");
-    if(!codec)
-        codec = avcodec_find_encoder_by_name("nvenc_h264");
-    return codec;
-}
-
-static const AVCodec* find_h265_encoder() {
-    const AVCodec *codec = avcodec_find_encoder_by_name("hevc_nvenc");
-    if(!codec)
-        codec = avcodec_find_encoder_by_name("nvenc_hevc");
-    return codec;
-}
-
-static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_context, 
+static AVCodecContext *create_video_codec_context(AVPixelFormat pix_fmt,
                             VideoQuality video_quality,
                             int fps, const AVCodec *codec, bool is_livestream) {
 
@@ -275,7 +264,7 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
         codec_context->gop_size = fps * 2;
     }
     codec_context->max_b_frames = 0;
-    codec_context->pix_fmt = AV_PIX_FMT_CUDA;
+    codec_context->pix_fmt = pix_fmt;
     codec_context->color_range = AVCOL_RANGE_JPEG;
     if(codec->id == AV_CODEC_ID_HEVC)
         codec_context->codec_tag = MKTAG('h', 'v', 'c', '1');
@@ -305,9 +294,6 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     if (codec_context->codec_id == AV_CODEC_ID_MPEG1VIDEO)
         codec_context->mb_decision = 2;
 
-    if(codec_context->codec_id == AV_CODEC_ID_H264)
-        codec_context->profile = FF_PROFILE_H264_HIGH;
-
     // stream->time_base = codec_context->time_base;
     // codec_context->ticks_per_frame = 30;
     //av_opt_set(codec_context->priv_data, "tune", "hq", 0);
@@ -331,11 +317,75 @@ static AVCodecContext *create_video_codec_context(AVFormatContext *av_format_con
     //codec_context->rc_min_rate = codec_context->bit_rate;
     //codec_context->rc_buffer_size = codec_context->bit_rate / 10;
 
-    av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     codec_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
     return codec_context;
 }
+
+#if 0
+static const AVCodec* find_h264_encoder() {
+    const AVCodec *codec = avcodec_find_encoder_by_name("h264_vaapi");
+    if(!codec)
+        codec = avcodec_find_encoder_by_name("vaapi_h264");
+    return codec;
+}
+
+static const AVCodec* find_h265_encoder() {
+    const AVCodec *codec = avcodec_find_encoder_by_name("hevc_vaapi");
+    if(!codec)
+        codec = avcodec_find_encoder_by_name("vaapi_hevc");
+    return codec;
+}
+#else
+static const AVCodec* find_h264_encoder() {
+    const AVCodec *codec = avcodec_find_encoder_by_name("h264_nvenc");
+    if(!codec)
+        codec = avcodec_find_encoder_by_name("nvenc_h264");
+
+    static bool checked = false;
+    if(!checked) {
+        checked = true;
+        // Do not use AV_PIX_FMT_CUDA because we dont want to do full check with hardware context
+        AVCodecContext *codec_context = create_video_codec_context(AV_PIX_FMT_YUV420P, VideoQuality::VERY_HIGH, 60, codec, false);
+        codec_context->width = 1920;
+        codec_context->height = 1080;
+        if(codec_context) {
+            if (avcodec_open2(codec_context, codec_context->codec, NULL) < 0) {
+                avcodec_free_context(&codec_context);
+                return nullptr;
+            }
+            avcodec_free_context(&codec_context);
+        }
+    }
+    return codec;
+}
+
+static const AVCodec* find_h265_encoder() {
+    const AVCodec *codec = avcodec_find_encoder_by_name("hevc_nvenc");
+    if(!codec)
+        codec = avcodec_find_encoder_by_name("nvenc_hevc");
+
+    if(!codec)
+        return nullptr;
+
+    static bool checked = false;
+    if(!checked) {
+        checked = true;
+        // Do not use AV_PIX_FMT_CUDA because we dont want to do full check with hardware context
+        AVCodecContext *codec_context = create_video_codec_context(AV_PIX_FMT_YUV420P, VideoQuality::VERY_HIGH, 60, codec, false);
+        codec_context->width = 1920;
+        codec_context->height = 1080;
+         if(codec_context) {
+            if (avcodec_open2(codec_context, codec_context->codec, NULL) < 0) {
+                avcodec_free_context(&codec_context);
+                return nullptr;
+            }
+            avcodec_free_context(&codec_context);
+        }
+    }
+    return codec;
+}
+#endif
 
 static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
     int ret;
@@ -371,15 +421,15 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
 
 static void open_video(AVCodecContext *codec_context, VideoQuality video_quality, bool very_old_gpu) {
     bool supports_p4 = false;
-    bool supports_p7 = false;
+    bool supports_p6 = false;
 
     const AVOption *opt = nullptr;
     while((opt = av_opt_next(codec_context->priv_data, opt))) {
         if(opt->type == AV_OPT_TYPE_CONST) {
             if(strcmp(opt->name, "p4") == 0)
                 supports_p4 = true;
-            else if(strcmp(opt->name, "p7") == 0)
-                supports_p7 = true;
+            else if(strcmp(opt->name, "p6") == 0)
+                supports_p6 = true;
         }
     }
 
@@ -416,7 +466,7 @@ static void open_video(AVCodecContext *codec_context, VideoQuality video_quality
         }
     }
 
-    if(!supports_p4 && !supports_p7)
+    if(!supports_p4 && !supports_p6)
         fprintf(stderr, "Info: your ffmpeg version is outdated. It's recommended that you use the flatpak version of gpu-screen-recorder version instead, which you can find at https://flathub.org/apps/details/com.dec05eba.gpu_screen_recorder\n");
 
     //if(is_livestream) {
@@ -429,10 +479,11 @@ static void open_video(AVCodecContext *codec_context, VideoQuality video_quality
     // with pretty good performance but you now have to choose p1-p7, which are gpu agnostic and on
     // older gpus p5-p7 slow the gpu down to a crawl...
     // "hq" is now just an alias for p7 in ffmpeg :(
+    // TODO: Temporary disable because of stuttering?
     if(very_old_gpu)
         av_dict_set(&options, "preset", supports_p4 ? "p4" : "medium", 0);
     else
-        av_dict_set(&options, "preset", supports_p7 ? "p7" : "slow", 0);
+        av_dict_set(&options, "preset", supports_p6 ? "p6" : "slow", 0);
 
     av_dict_set(&options, "tune", "hq", 0);
     av_dict_set(&options, "rc", "constqp", 0);
@@ -448,11 +499,11 @@ static void open_video(AVCodecContext *codec_context, VideoQuality video_quality
 }
 
 static void usage() {
-    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> -c <container_format> -f <fps> [-a <audio_input>...] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
+    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> [-c <container_format>] -f <fps> [-a <audio_input>...] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
     fprintf(stderr, "OPTIONS:\n");
     fprintf(stderr, "  -w    Window to record or a display, \"screen\" or \"screen-direct\". The display is the display name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded and they are recorded in h265 (aka hevc)."
         "\"screen-direct\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Recording a display requires a gpu with NvFBC support.\n");
-    fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv.\n");
+    fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv. Only required if no output file is specified or if recording in replay buffer mode. If an output file is specified and -c is not used then the container format is determined from the output filename extension.\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. A name can be given to the audio input device by prefixing the audio input with <name>/, for example \"dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor\". Optional, no audio track is added by default.\n");
     fprintf(stderr, "  -q    Video quality. Should be either 'medium', 'high', 'very_high' or 'ultra'. 'high' is the recommended option when live streaming or when you have a slower harddrive. Optional, set to 'very_high' be default.\n");
@@ -547,7 +598,7 @@ static std::future<void> save_replay_thread;
 static std::vector<AVPacket> save_replay_packets;
 static std::string save_replay_output_filepath;
 
-static void save_replay_async(AVCodecContext *video_codec_context, int video_stream_index, std::vector<AudioTrack> &audio_tracks, const std::deque<AVPacket> &frame_data_queue, bool frames_erased, std::string output_dir, std::string container_format, std::mutex &write_output_mutex) {
+static void save_replay_async(AVCodecContext *video_codec_context, int video_stream_index, std::vector<AudioTrack> &audio_tracks, const std::deque<AVPacket> &frame_data_queue, bool frames_erased, std::string output_dir, const char *container_format, const std::string &file_extension, std::mutex &write_output_mutex) {
     if(save_replay_thread.valid())
         return;
     
@@ -590,11 +641,10 @@ static void save_replay_async(AVCodecContext *video_codec_context, int video_str
         }
     }
 
-    save_replay_output_filepath = output_dir + "/Replay_" + get_date_str() + "." + container_format;
+    save_replay_output_filepath = output_dir + "/Replay_" + get_date_str() + "." + file_extension;
     save_replay_thread = std::async(std::launch::async, [video_stream_index, container_format, start_index, video_pts_offset, audio_pts_offset, video_codec_context, &audio_tracks]() mutable {
         AVFormatContext *av_format_context;
-        // The output format is automatically guessed from the file extension
-        avformat_alloc_output_context2(&av_format_context, nullptr, container_format.c_str(), nullptr);
+        avformat_alloc_output_context2(&av_format_context, nullptr, container_format, nullptr);
 
         av_format_context->flags |= AVFMT_FLAG_GENPTS;
         av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -643,7 +693,7 @@ static void save_replay_async(AVCodecContext *video_codec_context, int video_str
             av_packet.stream_index = stream->index;
             av_packet_rescale_ts(&av_packet, codec_context->time_base, stream->time_base);
 
-            int ret = av_write_frame(av_format_context, &av_packet);
+            int ret = av_interleaved_write_frame(av_format_context, &av_packet);
             if(ret < 0)
                 fprintf(stderr, "Error: Failed to write frame index %d to muxer, reason: %s (%d)\n", stream->index, av_error_to_string(ret), ret);
         }
@@ -682,14 +732,68 @@ static bool is_livestream_path(const char *str) {
         return false;
 }
 
+typedef enum {
+    GPU_VENDOR_AMD,
+    GPU_VENDOR_INTEL,
+    GPU_VENDOR_NVIDIA
+} gpu_vendor;
+
+typedef struct {
+    gpu_vendor vendor;
+    int gpu_version; /* 0 if unknown */
+} gpu_info;
+
+static bool gl_get_gpu_info(Display *dpy, gpu_info *info) {
+    gsr_egl gl;
+    if(!gsr_egl_load(&gl, dpy)) {
+        fprintf(stderr, "Error: failed to load opengl\n");
+        return false;
+    }
+
+    bool supported = true;
+    const unsigned char *gl_vendor = gl.glGetString(GL_VENDOR);
+    const unsigned char *gl_renderer = gl.glGetString(GL_RENDERER);
+
+    info->gpu_version = 0;
+
+    if(!gl_vendor) {
+        fprintf(stderr, "Error: failed to get gpu vendor\n");
+        supported = false;
+        goto end;
+    }
+
+    if(strstr((const char*)gl_vendor, "AMD"))
+        info->vendor = GPU_VENDOR_AMD;
+    else if(strstr((const char*)gl_vendor, "Intel"))
+        info->vendor = GPU_VENDOR_INTEL;
+    else if(strstr((const char*)gl_vendor, "NVIDIA"))
+        info->vendor = GPU_VENDOR_NVIDIA;
+    else {
+        fprintf(stderr, "Error: unknown gpu vendor: %s\n", gl_vendor);
+        supported = false;
+        goto end;
+    }
+
+    if(gl_renderer) {
+        if(info->vendor == GPU_VENDOR_NVIDIA)
+            sscanf((const char*)gl_renderer, "%*s %*s %*s %d", &info->gpu_version);
+    }
+
+    end:
+    gsr_egl_unload(&gl);
+    return supported;
+}
+
 int main(int argc, char **argv) {
     signal(SIGINT, int_handler);
     signal(SIGUSR1, save_replay_handler);
 
+    //av_log_set_level(AV_LOG_TRACE);
+
     std::map<std::string, Arg> args = {
         { "-w", Arg { {}, false, false } },
         //{ "-s", Arg { nullptr, true } },
-        { "-c", Arg { {}, false, false } },
+        { "-c", Arg { {}, true, false } },
         { "-f", Arg { {}, false, false } },
         //{ "-s", Arg { {}, true, false } },
         { "-a", Arg { {}, true, true } },
@@ -807,35 +911,31 @@ int main(int argc, char **argv) {
     Display *dpy = XOpenDisplay(nullptr);
     if (!dpy) {
         fprintf(stderr, "Error: Failed to open display\n");
-        return 1;
+        return 2;
     }
 
     XSetErrorHandler(x11_error_handler);
     XSetIOErrorHandler(x11_io_error_handler);
 
-    gsr_gl gl;
-    if(!gsr_gl_load(&gl, dpy)) {
-        fprintf(stderr, "Error: failed to load opengl\n");
-        return 1;
-    }
-
+    gpu_info gpu_inf;
     bool very_old_gpu = false;
-    const unsigned char *gl_renderer = gl.glGetString(GL_RENDERER);
-    if(gl_renderer) {
-        int gpu_num = 1000;
-        sscanf((const char*)gl_renderer, "%*s %*s %*s %d", &gpu_num);
-        if(gpu_num < 900) {
-            fprintf(stderr, "Info: your gpu appears to be very old (older than maxwell architecture). Switching to lower preset\n");
-            very_old_gpu = true;
-        }
-    }
+    if(!gl_get_gpu_info(dpy, &gpu_inf))
+        return 2;
 
-    gsr_gl_unload(&gl);
+    if(gpu_inf.vendor == GPU_VENDOR_NVIDIA && gpu_inf.gpu_version != 0 && gpu_inf.gpu_version < 900) {
+        fprintf(stderr, "Info: your gpu appears to be very old (older than maxwell architecture). Switching to lower preset\n");
+        very_old_gpu = true;
+    }
 
     const char *window_str = args["-w"].value();
 
     gsr_capture *capture = nullptr;
     if(contains_non_hex_number(window_str)) {
+        if(gpu_inf.vendor != GPU_VENDOR_NVIDIA) {
+            fprintf(stderr, "Error: recording a monitor is only supported on NVIDIA right now\n");
+            return 2;
+        }
+
         const char *capture_target = window_str;
         bool direct_capture = strcmp(window_str, "screen-direct") == 0;
         if(direct_capture) {
@@ -874,19 +974,45 @@ int main(int argc, char **argv) {
             usage();
         }
 
-        gsr_capture_xcomposite_params xcomposite_params;
-        xcomposite_params.window = src_window_id;
-        capture = gsr_capture_xcomposite_create(&xcomposite_params);
-        if(!capture)
-            return 1;
+        switch(gpu_inf.vendor) {
+            case GPU_VENDOR_AMD: {
+                gsr_capture_xcomposite_drm_params xcomposite_params;
+                xcomposite_params.window = src_window_id;
+                capture = gsr_capture_xcomposite_drm_create(&xcomposite_params);
+                if(!capture)
+                    return 1;
+                break;
+            }
+            case GPU_VENDOR_INTEL: {
+                gsr_capture_xcomposite_drm_params xcomposite_params;
+                xcomposite_params.window = src_window_id;
+                capture = gsr_capture_xcomposite_drm_create(&xcomposite_params);
+                if(!capture)
+                    return 1;
+                break;
+            }
+            case GPU_VENDOR_NVIDIA: {
+                gsr_capture_xcomposite_cuda_params xcomposite_params;
+                xcomposite_params.window = src_window_id;
+                capture = gsr_capture_xcomposite_cuda_create(&xcomposite_params);
+                if(!capture)
+                    return 1;
+                break;
+            }
+        }
     }
 
     const char *filename = args["-o"].value();
     if(filename) {
         if(replay_buffer_size_secs != -1) {
+            if(!container_format) {
+                fprintf(stderr, "Error: option -c is required when using option -r\n");
+                usage();
+            }
+
             struct stat buf;
             if(stat(filename, &buf) == -1 || !S_ISDIR(buf.st_mode)) {
-                fprintf(stderr, "%s does not exist or is not a directory\n", filename);
+                fprintf(stderr, "Error: directory \"%s\" does not exist or is not a directory\n", filename);
                 usage();
             }
         }
@@ -894,9 +1020,33 @@ int main(int argc, char **argv) {
         if(replay_buffer_size_secs == -1) {
             filename = "/dev/stdout";
         } else {
-            fprintf(stderr, "Option -o is required when using option -r\n");
+            fprintf(stderr, "Error: Option -o is required when using option -r\n");
             usage();
         }
+
+        if(!container_format) {
+            fprintf(stderr, "Error: option -c is required when not using option -o\n");
+            usage();
+        }
+    }
+
+    AVFormatContext *av_format_context;
+    // The output format is automatically guessed by the file extension
+    avformat_alloc_output_context2(&av_format_context, nullptr, container_format, filename);
+    if (!av_format_context) {
+        fprintf(stderr, "Error: Failed to deduce container format from file extension\n");
+        return 1;
+    }
+
+    av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    av_format_context->flags |= AVFMT_FLAG_GENPTS;
+    const AVOutputFormat *output_format = av_format_context->oformat;
+
+    std::string file_extension = output_format->extensions;
+    {
+        size_t comma_index = file_extension.find(',');
+        if(comma_index != std::string::npos)
+            file_extension = file_extension.substr(0, comma_index);
     }
 
     const double target_fps = 1.0 / (double)fps;
@@ -909,6 +1059,8 @@ int main(int argc, char **argv) {
         // while with h264 the fps doesn't drop.
         if(!h265_codec) {
             fprintf(stderr, "Info: using h264 encoder because a codec was not specified and your gpu does not support h265\n");
+            codec_to_use = "h264";
+            video_codec = VideoCodec::H264;
         } else if(fps > 60) {
             fprintf(stderr, "Info: using h264 encoder because a codec was not specified and fps is more than 60\n");
             codec_to_use = "h264";
@@ -921,7 +1073,7 @@ int main(int argc, char **argv) {
     }
 
     //bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
-    if(video_codec != VideoCodec::H264 && strcmp(container_format, "flv") == 0) {
+    if(video_codec != VideoCodec::H264 && strcmp(file_extension.c_str(), "flv") == 0) {
         video_codec = VideoCodec::H264;
         fprintf(stderr, "Warning: h265 is not compatible with flv, falling back to h264 instead.\n");
     }
@@ -941,21 +1093,6 @@ int main(int argc, char **argv) {
         exit(2);
     }
 
-    // Video start
-    AVFormatContext *av_format_context;
-    // The output format is automatically guessed by the file extension
-    avformat_alloc_output_context2(&av_format_context, nullptr, container_format,
-                                   nullptr);
-    if (!av_format_context) {
-        fprintf(
-            stderr,
-            "Error: Failed to deduce output format from file extension\n");
-        return 1;
-    }
-
-    av_format_context->flags |= AVFMT_FLAG_GENPTS;
-    const AVOutputFormat *output_format = av_format_context->oformat;
-
     const bool is_livestream = is_livestream_path(filename);
     // (Some?) livestreaming services require at least one audio track to work.
     // If not audio is provided then create one silent audio track.
@@ -967,7 +1104,7 @@ int main(int argc, char **argv) {
     AVStream *video_stream = nullptr;
     std::vector<AudioTrack> audio_tracks;
 
-    AVCodecContext *video_codec_context = create_video_codec_context(av_format_context, quality, fps, video_codec_f, is_livestream);
+    AVCodecContext *video_codec_context = create_video_codec_context(AV_PIX_FMT_CUDA, quality, fps, video_codec_f, is_livestream);
     if(replay_buffer_size_secs == -1)
         video_stream = create_stream(av_format_context, video_codec_context);
 
@@ -982,7 +1119,7 @@ int main(int argc, char **argv) {
 
     int audio_stream_index = VIDEO_STREAM_INDEX + 1;
     for(const AudioInput &audio_input : requested_audio_inputs) {
-        AVCodecContext *audio_codec_context = create_audio_codec_context(av_format_context, fps);
+        AVCodecContext *audio_codec_context = create_audio_codec_context(fps);
 
         AVStream *audio_stream = nullptr;
         if(replay_buffer_size_secs == -1)
@@ -1028,13 +1165,7 @@ int main(int argc, char **argv) {
     frame->format = video_codec_context->pix_fmt;
     frame->width = video_codec_context->width;
     frame->height = video_codec_context->height;
-
-    if(video_codec_context->hw_frames_ctx) {
-        // TODO: Unref at the end?
-        frame->hw_frames_ctx = av_buffer_ref(video_codec_context->hw_frames_ctx);
-        frame->buf[0] = av_buffer_pool_get(((AVHWFramesContext*)video_codec_context->hw_frames_ctx->data)->pool);
-        frame->extended_data = frame->data;
-    }
+    frame->color_range = AVCOL_RANGE_JPEG;
 
     std::mutex write_output_mutex;
 
@@ -1103,15 +1234,21 @@ int main(int argc, char **argv) {
                     break;
                 }
 
-                const int64_t num_missing_frames = std::round((this_audio_frame_time - received_audio_time) / target_audio_hz / (int64_t)audio_track.frame->nb_samples);
+                int64_t num_missing_frames = std::round((this_audio_frame_time - received_audio_time) / target_audio_hz / (int64_t)audio_track.frame->nb_samples);
+                if(got_audio_data)
+                    num_missing_frames = std::max((int64_t)0, num_missing_frames - 1);
+
+                if(!audio_track.sound_device.handle)
+                    num_missing_frames = std::max((int64_t)1, num_missing_frames);
+
                 // Jesus is there a better way to do this? I JUST WANT TO KEEP VIDEO AND AUDIO SYNCED HOLY FUCK I WANT TO KILL MYSELF NOW.
                 // THIS PIECE OF SHIT WANTS EMPTY FRAMES OTHERWISE VIDEO PLAYS TOO FAST TO KEEP UP WITH AUDIO OR THE AUDIO PLAYS TOO EARLY.
                 // BUT WE CANT USE DELAYS TO GIVE DUMMY DATA BECAUSE PULSEAUDIO MIGHT GIVE AUDIO A BIG DELAYED!!!
-                if(num_missing_frames >= 5 || (num_missing_frames > 0 && got_audio_data)) {
+                if(num_missing_frames >= 5 || !audio_track.sound_device.handle) {
                     // TODO:
                     //audio_track.frame->data[0] = empty_audio;
                     received_audio_time = this_audio_frame_time;
-                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.sound_device.frames);
+                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.codec_context->frame_size);
                     // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
                     for(int i = 0; i < num_missing_frames; ++i) {
                         audio_track.frame->pts = pts;
@@ -1125,26 +1262,12 @@ int main(int argc, char **argv) {
                     }
                 }
 
-                if(!audio_track.sound_device.handle) {
-                    // TODO:
-                    //audio_track.frame->data[0] = empty_audio;
-                    received_audio_time = this_audio_frame_time;
-                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.codec_context->frame_size);
-                    audio_track.frame->pts = pts;
-                    pts += audio_track.frame->nb_samples;
-                    ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
-                    if(ret >= 0){
-                        receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
-                    } else {
-                        fprintf(stderr, "Failed to encode audio!\n");
-                    }
-
+                if(!audio_track.sound_device.handle)
                     usleep(timeout_ms * 1000);
-                }
 
                 if(got_audio_data) {
                     // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
-                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.sound_device.frames);
+                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.codec_context->frame_size);
 
                     audio_track.frame->pts = pts;
                     pts += audio_track.frame->nb_samples;
@@ -1197,14 +1320,20 @@ int main(int argc, char **argv) {
             const int64_t expected_frames = std::round((this_video_frame_time - start_time_pts) / target_fps);
 
             const int num_frames = std::max(0L, expected_frames - video_pts_counter);
+
+            frame->flags &= ~AV_FRAME_FLAG_DISCARD;
             // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
             for(int i = 0; i < num_frames; ++i) {
+                if(i > 0)
+                    frame->flags |= AV_FRAME_FLAG_DISCARD;
+
                 frame->pts = video_pts_counter + i;
-                if (avcodec_send_frame(video_codec_context, frame) >= 0) {
+                int ret = avcodec_send_frame(video_codec_context, frame);
+                if (ret >= 0) {
                     receive_frames(video_codec_context, VIDEO_STREAM_INDEX, video_stream, frame, av_format_context,
                                 record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
                 } else {
-                    fprintf(stderr, "Error: avcodec_send_frame failed\n");
+                    fprintf(stderr, "Error: avcodec_send_frame failed, error: %s\n", av_error_to_string(ret));
                 }
             }
             video_pts_counter += num_frames;
@@ -1213,15 +1342,12 @@ int main(int argc, char **argv) {
         if(save_replay_thread.valid() && save_replay_thread.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             save_replay_thread.get();
             puts(save_replay_output_filepath.c_str());
-            for(size_t i = 0; i < save_replay_packets.size(); ++i) {
-                av_packet_unref(&save_replay_packets[i]);
-            }
             save_replay_packets.clear();
         }
 
         if(save_replay == 1 && !save_replay_thread.valid() && replay_buffer_size_secs != -1) {
             save_replay = 0;
-            save_replay_async(video_codec_context, VIDEO_STREAM_INDEX, audio_tracks, frame_data_queue, frames_erased, filename, container_format, write_output_mutex);
+            save_replay_async(video_codec_context, VIDEO_STREAM_INDEX, audio_tracks, frame_data_queue, frames_erased, filename, container_format, file_extension, write_output_mutex);
         }
 
         // av_frame_free(&frame);
@@ -1234,8 +1360,10 @@ int main(int argc, char **argv) {
 
 	running = 0;
 
-    if(save_replay_thread.valid())
+    if(save_replay_thread.valid()) {
         save_replay_thread.get();
+        puts(save_replay_output_filepath.c_str());
+    }
 
     for(AudioTrack &audio_track : audio_tracks) {
         audio_track.thread.join();

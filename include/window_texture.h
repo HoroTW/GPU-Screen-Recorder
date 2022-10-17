@@ -1,20 +1,22 @@
 #ifndef WINDOW_TEXTURE_H
 #define WINDOW_TEXTURE_H
 
-#include "gl.h"
+#include "egl.h"
 
 typedef struct {
     Display *display;
     Window window;
     Pixmap pixmap;
-    GLXPixmap glx_pixmap;
     unsigned int texture_id;
+    unsigned int target_texture_id;
+    int texture_width;
+    int texture_height;
     int redirected;
-    gsr_gl *gl;
+    gsr_egl *egl;
 } WindowTexture;
 
 /* Returns 0 on success */
-int window_texture_init(WindowTexture *window_texture, Display *display, Window window, gsr_gl *gl);
+int window_texture_init(WindowTexture *window_texture, Display *display, Window window, gsr_egl *egl);
 void window_texture_deinit(WindowTexture *self);
 
 /*

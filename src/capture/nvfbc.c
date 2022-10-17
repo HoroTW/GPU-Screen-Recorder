@@ -22,6 +22,7 @@ typedef struct {
     bool fbc_handle_created;
 
     gsr_cuda cuda;
+    bool frame_initialized;
 } gsr_capture_nvfbc;
 
 #if defined(_WIN64) || defined(__LP64__)
@@ -52,28 +53,45 @@ static uint32_t get_output_id_from_display_name(NVFBC_RANDR_OUTPUT_INFO *outputs
 }
 
 /* TODO: Test with optimus and open kernel modules */
-static bool driver_supports_direct_capture_cursor() {
+static bool get_driver_version(int *major, int *minor) {
+    *major = 0;
+    *minor = 0;
+
     FILE *f = fopen("/proc/driver/nvidia/version", "rb");
-    if(!f)
+    if(!f) {
+        fprintf(stderr, "gsr warning: failed to get nvidia driver version (failed to read /proc/driver/nvidia/version)\n");
         return false;
+    }
 
     char buffer[2048];
     size_t bytes_read = fread(buffer, 1, sizeof(buffer) - 1, f);
     buffer[bytes_read] = '\0';
 
-    bool supports_cursor = false;
+    bool success = false;
     const char *p = strstr(buffer, "Kernel Module");
     if(p) {
         p += 13;
         int driver_major_version = 0, driver_minor_version = 0;
         if(sscanf(p, "%d.%d", &driver_major_version, &driver_minor_version) == 2) {
-            if(driver_major_version > 515 || (driver_major_version == 515 && driver_minor_version >= 57))
-                supports_cursor = true;
+            *major = driver_major_version;
+            *minor = driver_minor_version;
+            success = true;
         }
     }
 
+    if(!success)
+        fprintf(stderr, "gsr warning: failed to get nvidia driver version\n");
+
     fclose(f);
-    return supports_cursor;
+    return success;
+}
+
+static bool version_at_least(int major, int minor, int expected_major, int expected_minor) {
+    return major > expected_major || (major == expected_major && minor >= expected_minor);
+}
+
+static bool version_less_than(int major, int minor, int expected_major, int expected_minor) {
+    return major < expected_major || (major == expected_major && minor < expected_minor);
 }
 
 static bool gsr_capture_nvfbc_load_library(gsr_capture *cap) {
@@ -180,6 +198,30 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap, AVCodecContext *video_codec
 
     const bool capture_region = (x > 0 || y > 0 || width > 0 || height > 0);
 
+    bool supports_direct_cursor = false;
+    bool direct_capture = cap_nvfbc->params.direct_capture;
+    int driver_major_version = 0;
+    int driver_minor_version = 0;
+    if(direct_capture && get_driver_version(&driver_major_version, &driver_minor_version)) {
+        fprintf(stderr, "Info: detected nvidia version: %d.%d\n", driver_major_version, driver_minor_version);
+
+        if(version_at_least(driver_major_version, driver_minor_version, 515, 57) && version_less_than(driver_major_version, driver_minor_version, 520, 56)) {
+            direct_capture = false;
+            fprintf(stderr, "Warning: \"screen-direct\" has temporary been disabled as it causes stuttering with driver versions >= 515.57 and < 520.56. Please update your driver if possible. Capturing \"screen\" instead.\n");
+        }
+
+        // TODO:
+        // Cursor capture disabled because moving the cursor doesn't update capture rate to monitor hz and instead captures at 10-30 hz
+        /*
+        if(direct_capture) {
+            if(version_at_least(driver_major_version, driver_minor_version, 515, 57))
+                supports_direct_cursor = true;
+            else
+                fprintf(stderr, "Info: capturing \"screen-direct\" but driver version appears to be less than 515.57. Disabling capture of cursor. Please update your driver if you want to capture your cursor or record \"screen\" instead.\n");
+        }
+        */
+    }
+
     NVFBCSTATUS status;
     NVFBC_TRACKING_TYPE tracking_type;
     bool capture_session_created = false;
@@ -245,11 +287,11 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap, AVCodecContext *video_codec
     memset(&create_capture_params, 0, sizeof(create_capture_params));
     create_capture_params.dwVersion = NVFBC_CREATE_CAPTURE_SESSION_PARAMS_VER;
     create_capture_params.eCaptureType = NVFBC_CAPTURE_SHARED_CUDA;
-    create_capture_params.bWithCursor = (!cap_nvfbc->params.direct_capture || driver_supports_direct_capture_cursor()) ? NVFBC_TRUE : NVFBC_FALSE;
+    create_capture_params.bWithCursor = (!direct_capture || supports_direct_cursor) ? NVFBC_TRUE : NVFBC_FALSE;
     if(capture_region)
         create_capture_params.captureBox = (NVFBC_BOX){ x, y, width, height };
     create_capture_params.eTrackingType = tracking_type;
-    create_capture_params.dwSamplingRateMs = 1000u / (uint32_t)cap_nvfbc->params.fps;
+    create_capture_params.dwSamplingRateMs = 1000u / ((uint32_t)cap_nvfbc->params.fps + 1);
     create_capture_params.bAllowDirectCapture = cap_nvfbc->params.direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
     create_capture_params.bPushModel = cap_nvfbc->params.direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
     if(tracking_type == NVFBC_TRACKING_OUTPUT)
@@ -324,6 +366,16 @@ static void gsr_capture_nvfbc_destroy_session(gsr_capture *cap) {
     cap_nvfbc->nv_fbc_handle = 0;
 }
 
+static void gsr_capture_nvfbc_tick(gsr_capture *cap, AVCodecContext *video_codec_context, AVFrame **frame) {
+    gsr_capture_nvfbc *cap_nvfbc = cap->priv;
+    if(!cap_nvfbc->frame_initialized && video_codec_context->hw_frames_ctx) {
+        cap_nvfbc->frame_initialized = true;
+        (*frame)->hw_frames_ctx = video_codec_context->hw_frames_ctx;
+        (*frame)->buf[0] = av_buffer_pool_get(((AVHWFramesContext*)video_codec_context->hw_frames_ctx->data)->pool);
+        (*frame)->extended_data = (*frame)->data;
+    }
+}
+
 static int gsr_capture_nvfbc_capture(gsr_capture *cap, AVFrame *frame) {
     gsr_capture_nvfbc *cap_nvfbc = cap->priv;
 
@@ -338,6 +390,7 @@ static int gsr_capture_nvfbc_capture(gsr_capture *cap, AVFrame *frame) {
     grab_params.dwFlags = NVFBC_TOCUDA_GRAB_FLAGS_NOWAIT;/* | NVFBC_TOCUDA_GRAB_FLAGS_FORCE_REFRESH;*/
     grab_params.pFrameGrabInfo = &frame_info;
     grab_params.pCUDADeviceBuffer = &cu_device_ptr;
+    grab_params.dwTimeoutMs = 0;
 
     NVFBCSTATUS status = cap_nvfbc->nv_fbc_function_list.nvFBCToCudaGrabFrame(cap_nvfbc->nv_fbc_handle, &grab_params);
     if(status != NVFBC_SUCCESS) {
@@ -406,7 +459,7 @@ gsr_capture* gsr_capture_nvfbc_create(const gsr_capture_nvfbc_params *params) {
     
     *cap = (gsr_capture) {
         .start = gsr_capture_nvfbc_start,
-        .tick = NULL,
+        .tick = gsr_capture_nvfbc_tick,
         .should_stop = NULL,
         .capture = gsr_capture_nvfbc_capture,
         .destroy = gsr_capture_nvfbc_destroy,

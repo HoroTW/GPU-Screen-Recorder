@@ -13,14 +13,16 @@ static int x11_supports_composite_named_window_pixmap(Display *display) {
     return XCompositeQueryVersion(display, &major_version, &minor_version) && (major_version > 0 || minor_version >= 2);
 }
 
-int window_texture_init(WindowTexture *window_texture, Display *display, Window window, gsr_gl *gl) {
+int window_texture_init(WindowTexture *window_texture, Display *display, Window window, gsr_egl *egl) {
     window_texture->display = display;
     window_texture->window = window;
     window_texture->pixmap = None;
-    window_texture->glx_pixmap = None;
     window_texture->texture_id = 0;
+    window_texture->target_texture_id = 0;
+    window_texture->texture_width = 0;
+    window_texture->texture_height = 0;
     window_texture->redirected = 0;
-    window_texture->gl = gl;
+    window_texture->egl = egl;
     
     if(!x11_supports_composite_named_window_pixmap(display))
         return 1;
@@ -32,14 +34,13 @@ int window_texture_init(WindowTexture *window_texture, Display *display, Window 
 
 static void window_texture_cleanup(WindowTexture *self, int delete_texture) {
     if(delete_texture && self->texture_id) {
-        self->gl->glDeleteTextures(1, &self->texture_id);
+        self->egl->glDeleteTextures(1, &self->texture_id);
         self->texture_id = 0;
     }
 
-    if(self->glx_pixmap) {
-        self->gl->glXDestroyPixmap(self->display, self->glx_pixmap);
-        self->gl->glXReleaseTexImageEXT(self->display, self->glx_pixmap, GLX_FRONT_EXT);
-        self->glx_pixmap = None;
+    if(delete_texture && self->target_texture_id) {
+        self->egl->glDeleteTextures(1, &self->target_texture_id);
+        self->target_texture_id = 0;
     }
 
     if(self->pixmap) {
@@ -56,71 +57,23 @@ void window_texture_deinit(WindowTexture *self) {
     window_texture_cleanup(self, 1);
 }
 
+
+#define EGL_TRUE                          1
+#define EGL_IMAGE_PRESERVED_KHR           0x30D2
+#define EGL_NATIVE_PIXMAP_KHR             0x30B0
+
 int window_texture_on_resize(WindowTexture *self) {
     window_texture_cleanup(self, 0);
 
     int result = 0;
-    GLXFBConfig *configs = NULL;
     Pixmap pixmap = None;
-    GLXPixmap glx_pixmap = None;
     unsigned int texture_id = 0;
-    int glx_pixmap_bound = 0;
+    EGLImage image = NULL;
 
-    const int pixmap_config[] = {
-        GLX_BIND_TO_TEXTURE_RGB_EXT, True,
-        GLX_DRAWABLE_TYPE, GLX_PIXMAP_BIT | GLX_WINDOW_BIT,
-        GLX_BIND_TO_TEXTURE_TARGETS_EXT, GLX_TEXTURE_2D_BIT_EXT,
-        /*GLX_BIND_TO_MIPMAP_TEXTURE_EXT, True,*/
-        GLX_BUFFER_SIZE, 24,
-        GLX_RED_SIZE, 8,
-        GLX_GREEN_SIZE, 8,
-        GLX_BLUE_SIZE, 8,
-        GLX_ALPHA_SIZE, 0,
-        None
-    };
-
-    const int pixmap_attribs[] = {
-        GLX_TEXTURE_TARGET_EXT, GLX_TEXTURE_2D_EXT,
-        GLX_TEXTURE_FORMAT_EXT, GLX_TEXTURE_FORMAT_RGB_EXT,
-        /*GLX_MIPMAP_TEXTURE_EXT, True,*/
-        None
-    };
-
-    XWindowAttributes attr;
-    if (!XGetWindowAttributes(self->display, self->window, &attr)) {
-        fprintf(stderr, "Failed to get window attributes\n");
-        return 1;
-    }
-
-    GLXFBConfig config;
-    int c;
-    configs = self->gl->glXChooseFBConfig(self->display, 0, pixmap_config, &c);
-    if(!configs) {
-        fprintf(stderr, "Failed to choose fb config\n");
-        return 1;
-    }
-
-    int found = 0;
-    for (int i = 0; i < c; i++) {
-        config = configs[i];
-        XVisualInfo *visual = self->gl->glXGetVisualFromFBConfig(self->display, config);
-        if (!visual)
-            continue;
-
-        if (attr.depth != visual->depth) {
-            XFree(visual);
-            continue;
-        }
-        XFree(visual);
-        found = 1;
-        break;
-    }
-
-    if(!found) {
-        fprintf(stderr, "No matching fb config found\n");
-        result = 1;
-        goto cleanup;
-    }
+    const intptr_t pixmap_attrs[] = {
+		EGL_IMAGE_PRESERVED_KHR, EGL_TRUE,
+		EGL_NONE,
+	};
 
     pixmap = XCompositeNameWindowPixmap(self->display, self->window);
     if(!pixmap) {
@@ -128,46 +81,60 @@ int window_texture_on_resize(WindowTexture *self) {
         goto cleanup;
     }
 
-    glx_pixmap = self->gl->glXCreatePixmap(self->display, config, pixmap, pixmap_attribs);
-    if(!glx_pixmap) {
-        result = 3;
-        goto cleanup;
-    }
-
     if(self->texture_id == 0) {
-        self->gl->glGenTextures(1, &texture_id);
+        self->egl->glGenTextures(1, &texture_id);
         if(texture_id == 0) {
             result = 4;
             goto cleanup;
         }
-        self->gl->glBindTexture(GL_TEXTURE_2D, texture_id);
+        self->egl->glBindTexture(GL_TEXTURE_2D, texture_id);
     } else {
-        self->gl->glBindTexture(GL_TEXTURE_2D, self->texture_id);
+        self->egl->glBindTexture(GL_TEXTURE_2D, self->texture_id);
+        texture_id = self->texture_id;
     }
 
-    self->gl->glXBindTexImageEXT(self->display, glx_pixmap, GLX_FRONT_EXT, NULL);
-    glx_pixmap_bound = 1;
+    image = self->egl->eglCreateImage(self->egl->egl_display, NULL, EGL_NATIVE_PIXMAP_KHR, (EGLClientBuffer)pixmap, pixmap_attrs);
+    if(!image) {
+        fprintf(stderr, "eglCreateImage failed\n");
+        return -1;
+    }
+    fprintf(stderr, "gl error: %d\n", self->egl->glGetError());
 
-    self->gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    self->gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    self->gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    self->gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    fprintf(stderr, "image: %p\n", image);
+    self->egl->glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image);
+    if(self->egl->glGetError() != 0) {
+        fprintf(stderr, "glEGLImageTargetTexture2DOES failed\n");
+    }
 
-    self->gl->glBindTexture(GL_TEXTURE_2D, 0);
+    self->egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    self->egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    self->egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    self->egl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 
-    XFree(configs);
+    self->egl->glBindTexture(GL_TEXTURE_2D, 0);
+
     self->pixmap = pixmap;
-    self->glx_pixmap = glx_pixmap;
-    if(texture_id != 0)
+    if(texture_id != 0) {
         self->texture_id = texture_id;
+
+        self->egl->glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &self->texture_width);
+        self->egl->glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &self->texture_height);
+
+        fprintf(stderr, "texture width: %d, height: %d\n", self->texture_width, self->texture_height);
+
+        self->egl->glGenTextures(1, &self->target_texture_id);
+        self->egl->glBindTexture(GL_TEXTURE_2D, self->target_texture_id);
+        self->egl->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, self->texture_width, self->texture_height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        fprintf(stderr, "gl error: %d\n", self->egl->glGetError());
+        self->egl->glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    // TODO: destroyImage(image)
     return 0;
 
     cleanup:
-    if(texture_id != 0)     self->gl->glDeleteTextures(1, &texture_id);
-    if(glx_pixmap)          self->gl->glXDestroyPixmap(self->display, glx_pixmap);
-    if(glx_pixmap_bound)    self->gl->glXReleaseTexImageEXT(self->display, glx_pixmap, GLX_FRONT_EXT);
+    if(texture_id != 0)     self->egl->glDeleteTextures(1, &texture_id);
     if(pixmap)              XFreePixmap(self->display, pixmap);
-    if(configs)             XFree(configs);
     return result;
 }
 

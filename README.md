@@ -7,7 +7,6 @@ where only the last few seconds are saved.
 
 ## Note
 This software works only on x11.\
-Recording a window doesn't work when using picom in glx mode. However it works in xrender mode or when recording the a monitor/screen (which uses NvFBC).\
 If you are using a variable refresh rate monitor, then choose to record "screen-direct". This will allow variable refresh rate to work when recording fullscreen applications. Note that some applications such as mpv will not work in fullscreen mode. A fix is being developed for this.\
 For screen capture to work with PRIME (laptops with a nvidia gpu), you must set the primary GPU to use your dedicated nvidia graphics card. You can do this by selecting "NVIDIA (Performance Mode) in nvidia settings:\
 ![](https://dec05eba.com/images/nvidia-settings-prime.png)\
@@ -23,12 +22,12 @@ Using NvFBC (recording the monitor/screen) is not faster than not using NvFBC (r
 
 # Installation
 If you are running an Arch Linux based distro, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
-If you are running an Ubuntu based distro then run `install_ubuntu.sh` as root: `sudo ./install_ubuntu.sh`. You also need to install the `libnvidia-compute` version that fits your nvidia driver to install libcuda.so to run gpu-screen-recorder. But it's recommended that you use the flatpak version of gpu-screen-recorder if you use an older version of ubuntu as the ffmpeg version will be old and wont support the best quality options.\
+If you are running an Ubuntu based distro then run `install_ubuntu.sh` as root: `sudo ./install_ubuntu.sh`. You also need to install the `libnvidia-compute` version that fits your nvidia driver to install libcuda.so to run gpu-screen-recorder and `libnvidia-fbc.so.1` when using nvfbc. But it's recommended that you use the flatpak version of gpu-screen-recorder if you use an older version of ubuntu as the ffmpeg version will be old and wont support the best quality options.\
 If you are running another distro then you can run `install.sh` as root: `sudo ./install.sh`, but you need to manually install the dependencies, as described below.\
 You can also install gpu screen recorder ([the gtk gui version](https://git.dec05eba.com/gpu-screen-recorder-gtk/)) from [flathub](https://flathub.org/apps/details/com.dec05eba.gpu_screen_recorder).
 
 # Dependencies
-`libgl (libglvnd), ffmpeg, libx11, libxcomposite, libxrandr, libpulse`. You need to additionally have `libcuda.so` installed when you run `gpu-screen-recorder`.\
+`libgl (and libegl) (libglvnd), ffmpeg, libx11, libxcomposite, libpulse`. You need to additionally have `libcuda.so` installed when you run `gpu-screen-recorder` and `libnvidia-fbc.so.1` when using nvfbc.\
 Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
 
 # How to use
@@ -55,8 +54,6 @@ The plugin does everything on the GPU and gives the texture to OBS, but OBS does
 FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to an output video, and not when recording the screen when using x11grab. So FFMPEG has the same fps drop issues that OBS has.
 
 # TODO
-* Support AMD and Intel, using VAAPI.
-libraries at compile-time.
 * Dynamically change bitrate/resolution to match desired fps. This would be helpful when streaming for example, where the encode output speed also depends on upload speed to the streaming service.
 * Show cursor when recording. Currently the cursor is not visible when recording a window.
 * Implement opengl injection to capture texture. This fixes composition issues and (VRR) without having to use NvFBC direct capture.

@@ -6,6 +6,7 @@ tests/compile_commands.json
 
 .clangd/
 .cache/
+.vscode/
 
 *.o
 gpu-screen-recorder
