@@ -808,6 +808,8 @@ int main(int argc, char **argv) {
 
     VideoCodec video_codec;
     const char *codec_to_use = args["-k"].value();
+    fprintf(stderr, "Info: forcing codec to h264 to investigate stuttering with some configs\n");
+    codec_to_use = "h264";
     if(!codec_to_use)
         codec_to_use = "auto";
 
