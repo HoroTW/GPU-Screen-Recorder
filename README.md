@@ -52,6 +52,7 @@ The plugin does everything on the GPU and gives the texture to OBS, but OBS does
 FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to an output video, and not when recording the screen when using x11grab. So FFMPEG has the same fps drop issues that OBS has.
 
 # TODO
+* Support AMD and Intel, using VAAPI. Currently there are a lot of driver bugs with both AMD and Intel that causes video encoding to either fail, performance issues or causes the entire driver to crash.
 * Dynamically change bitrate/resolution to match desired fps. This would be helpful when streaming for example, where the encode output speed also depends on upload speed to the streaming service.
 * Show cursor when recording. Currently the cursor is not visible when recording a window.
 * Implement opengl injection to capture texture. This fixes VRR without having to use NvFBC direct capture.
