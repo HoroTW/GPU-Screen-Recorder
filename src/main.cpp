@@ -808,8 +808,6 @@ int main(int argc, char **argv) {
 
     VideoCodec video_codec;
     const char *codec_to_use = args["-k"].value();
-    fprintf(stderr, "Info: forcing codec to h264 to investigate stuttering with some configs\n");
-    codec_to_use = "h264";
     if(!codec_to_use)
         codec_to_use = "auto";
 
@@ -982,12 +980,8 @@ int main(int argc, char **argv) {
 
         const char *capture_target = window_str;
         bool direct_capture = strcmp(window_str, "screen-direct") == 0;
-        if(direct_capture) {
+        if(direct_capture)
             capture_target = "screen";
-            // TODO: Temporary disable direct capture because push model causes stuttering when it's direct capturing. This might be a nvfbc bug. This does not happen when using a compositor.
-            direct_capture = false;
-            fprintf(stderr, "Warning: screen-direct has temporary been disabled as it causes stuttering. This is likely a NvFBC bug. Falling back to \"screen\".\n");
-        }
 
         gsr_capture_nvfbc_params nvfbc_params;
         nvfbc_params.dpy = dpy;
