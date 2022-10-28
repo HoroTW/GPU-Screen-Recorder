@@ -11,6 +11,8 @@ If you are using a variable refresh rate monitor, then choose to record "screen-
 For screen capture to work with PRIME (laptops with a nvidia gpu), you must set the primary GPU to use your dedicated nvidia graphics card. You can do this by selecting "NVIDIA (Performance Mode) in nvidia settings:\
 ![](https://dec05eba.com/images/nvidia-settings-prime.png)\
 and then rebooting your laptop.
+### TEMPORARY ISSUE ###
+screen-direct capture has been temporary disabled as it causes issues with stuttering. This might be a nvfbc bug.
 
 # Performance
 When recording Legend of Zelda Breath of the Wild at 4k, fps drops from 30 to 7 when using OBS Studio + nvenc, however when using this screen recorder the fps remains at 30.\

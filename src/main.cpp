@@ -980,8 +980,12 @@ int main(int argc, char **argv) {
 
         const char *capture_target = window_str;
         bool direct_capture = strcmp(window_str, "screen-direct") == 0;
-        if(direct_capture)
+        if(direct_capture) {
             capture_target = "screen";
+            // TODO: Temporary disable direct capture because push model causes stuttering when it's direct capturing. This might be a nvfbc bug. This does not happen when using a compositor.
+            direct_capture = false;
+            fprintf(stderr, "Warning: screen-direct has temporary been disabled as it causes stuttering. This is likely a NvFBC bug. Falling back to \"screen\".\n");
+        }
 
         gsr_capture_nvfbc_params nvfbc_params;
         nvfbc_params.dpy = dpy;
