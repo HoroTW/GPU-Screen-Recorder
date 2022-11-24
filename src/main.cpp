@@ -1099,6 +1099,25 @@ int main(int argc, char **argv) {
 
     const double target_fps = 1.0 / (double)fps;
 
+    AVFormatContext *av_format_context;
+    // The output format is automatically guessed by the file extension
+    avformat_alloc_output_context2(&av_format_context, nullptr, container_format, filename);
+    if (!av_format_context) {
+        fprintf(stderr, "Error: Failed to deduce container format from file extension\n");
+        return 1;
+    }
+
+    av_format_context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    av_format_context->flags |= AVFMT_FLAG_GENPTS;
+    const AVOutputFormat *output_format = av_format_context->oformat;
+
+    std::string file_extension = output_format->extensions;
+    {
+        size_t comma_index = file_extension.find(',');
+        if(comma_index != std::string::npos)
+            file_extension = file_extension.substr(0, comma_index);
+    }
+
     if(strcmp(codec_to_use, "auto") == 0) {
         const AVCodec *h265_codec = find_h265_encoder(gpu_inf.vendor);
 
