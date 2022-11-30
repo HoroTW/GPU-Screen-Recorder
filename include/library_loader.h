@@ -2,6 +2,7 @@
 #define GSR_LIBRARY_LOADER_H
 
 #include <dlfcn.h>
+#include <stdbool.h>
 #include <stdio.h>
 
 typedef struct {

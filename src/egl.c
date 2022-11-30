@@ -3,11 +3,12 @@
 #include <string.h>
 
 static bool gsr_egl_create_window(gsr_egl *self) {
-    EGLDisplay egl_display = NULL;
     EGLConfig  ecfg;
-    int32_t     num_config;
-    EGLSurface egl_surface;
-    EGLContext egl_context;
+    int32_t    num_config = 0;
+    EGLDisplay egl_display = NULL;
+    EGLSurface egl_surface = NULL;
+    EGLContext egl_context = NULL;
+    Window window = None;
     
     int32_t attr[] = {
         EGL_BUFFER_SIZE, 24,
@@ -21,8 +22,7 @@ static bool gsr_egl_create_window(gsr_egl *self) {
         EGL_NONE
     };
 
-    // TODO: Is there a way to remove the need to create a window?
-    Window window = XCreateWindow(self->dpy, DefaultRootWindow(self->dpy), 0, 0, 1, 1, 0, CopyFromParent, InputOutput, CopyFromParent, 0, NULL);
+    window = XCreateWindow(self->dpy, DefaultRootWindow(self->dpy), 0, 0, 1, 1, 0, CopyFromParent, InputOutput, CopyFromParent, 0, NULL);
 
     if(!window) {
         fprintf(stderr, "gsr error: gsr_gl_create_window failed: failed to create gl window\n");
@@ -32,40 +32,32 @@ static bool gsr_egl_create_window(gsr_egl *self) {
     egl_display = self->eglGetDisplay(self->dpy);
     if(!egl_display) {
         fprintf(stderr, "gsr error: gsr_egl_create_window failed: eglGetDisplay failed\n");
-        return false;
+        goto fail;
     }
 
     if(!self->eglInitialize(egl_display, NULL, NULL)) {
         fprintf(stderr, "gsr error: gsr_egl_create_window failed: eglInitialize failed\n");
-        return false;
+        goto fail;
     }
     
-    // TODO: Cleanup ecfg?
-    if (!self->eglChooseConfig( egl_display, attr, &ecfg, 1, &num_config ) ) {
-        //cerr << "Failed to choose config (eglError: " << eglGetError() << ")" << endl;
-        return false;
+    if(!self->eglChooseConfig(egl_display, attr, &ecfg, 1, &num_config) || num_config != 1) {
+        fprintf(stderr, "gsr error: gsr_egl_create_window failed: failed to find a matching config\n");
+        goto fail;
     }
     
-    if ( num_config != 1 ) {
-        //cerr << "Didn't get exactly one config, but " << num_config << endl;
-        return false;
+    egl_surface = self->eglCreateWindowSurface(egl_display, ecfg, (EGLNativeWindowType)window, NULL);
+    if(!egl_surface) {
+        fprintf(stderr, "gsr error: gsr_egl_create_window failed: failed to create window surface\n");
+        goto fail;
     }
     
-    egl_surface = self->eglCreateWindowSurface ( egl_display, ecfg, (EGLNativeWindowType)window, NULL );
-    if ( !egl_surface ) {
-        //cerr << "Unable to create EGL surface (eglError: " << eglGetError() << ")" << endl;
-        return false;
+    egl_context = self->eglCreateContext(egl_display, ecfg, NULL, ctxattr);
+    if(!egl_context) {
+        fprintf(stderr, "gsr error: gsr_egl_create_window failed: failed to create egl context\n");
+        goto fail;
     }
-    
-    //// egl-contexts collect all state descriptions needed required for operation
-    egl_context = self->eglCreateContext ( egl_display, ecfg, NULL, ctxattr );
-    if ( !egl_context ) {
-        //cerr << "Unable to create EGL context (eglError: " << eglGetError() << ")" << endl;
-        return false;
-    }
-    
-    //// associate the egl-context with the egl-surface
-    self->eglMakeCurrent( egl_display, egl_surface, egl_surface, egl_context );
+
+    self->eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
 
     self->egl_display = egl_display;
     self->egl_surface = egl_surface;
@@ -74,31 +66,31 @@ static bool gsr_egl_create_window(gsr_egl *self) {
     return true;
 
     fail:
-    // TODO:
-    /*
+    if(egl_context)
+        self->eglDestroyContext(egl_display, egl_context);
+    if(egl_surface)
+        self->eglDestroySurface(egl_display, egl_surface);
+    if(egl_display)
+        self->eglTerminate(egl_display);
     if(window)
         XDestroyWindow(self->dpy, window);
-    if(colormap)
-        XFreeColormap(self->dpy, colormap);
-    if(gl_context)
-        self->glXDestroyContext(self->dpy, gl_context);
-    if(visual_info)
-        XFree(visual_info);
-    XFree(fbconfigs);
-    */
-    return False;
+    return false;
 }
 
 static bool gsr_egl_load_egl(gsr_egl *self, void *library) {
     dlsym_assign required_dlsym[] = {
         { (void**)&self->eglGetDisplay, "eglGetDisplay" },
         { (void**)&self->eglInitialize, "eglInitialize" },
+        { (void**)&self->eglTerminate, "eglTerminate" },
         { (void**)&self->eglChooseConfig, "eglChooseConfig" },
         { (void**)&self->eglCreateWindowSurface, "eglCreateWindowSurface" },
         { (void**)&self->eglCreateContext, "eglCreateContext" },
         { (void**)&self->eglMakeCurrent, "eglMakeCurrent" },
         { (void**)&self->eglCreatePixmapSurface, "eglCreatePixmapSurface" },
-        { (void**)&self->eglCreateImage, "eglCreateImage" }, // TODO: eglCreateImageKHR
+        { (void**)&self->eglCreateImage, "eglCreateImage" }, /* TODO: use eglCreateImageKHR instead? */
+        { (void**)&self->eglDestroyContext, "eglDestroyContext" },
+        { (void**)&self->eglDestroySurface, "eglDestroySurface" },
+        { (void**)&self->eglDestroyImage, "eglDestroyImage" },
         { (void**)&self->eglBindTexImage, "eglBindTexImage" },
         { (void**)&self->eglSwapInterval, "eglSwapInterval" },
         { (void**)&self->eglSwapBuffers, "eglSwapBuffers" },
@@ -115,23 +107,13 @@ static bool gsr_egl_load_egl(gsr_egl *self, void *library) {
     return true;
 }
 
-static bool gsr_egl_mesa_load_egl(gsr_egl *self) {
+static bool gsr_egl_proc_load_egl(gsr_egl *self) {
     self->eglExportDMABUFImageQueryMESA = self->eglGetProcAddress("eglExportDMABUFImageQueryMESA");
     self->eglExportDMABUFImageMESA = self->eglGetProcAddress("eglExportDMABUFImageMESA");
     self->glEGLImageTargetTexture2DOES = self->eglGetProcAddress("glEGLImageTargetTexture2DOES");
 
-    if(!self->eglExportDMABUFImageQueryMESA) {
-        fprintf(stderr, "could not find eglExportDMABUFImageQueryMESA\n");
-        return false;
-    }
-
-    if(!self->eglExportDMABUFImageMESA) {
-        fprintf(stderr, "could not find eglExportDMABUFImageMESA\n");
-        return false;
-    }
-
     if(!self->glEGLImageTargetTexture2DOES) {
-        fprintf(stderr, "could not find glEGLImageTargetTexture2DOES\n");
+        fprintf(stderr, "gsr error: gsr_egl_load failed: could not find glEGLImageTargetTexture2DOES\n");
         return false;
     }
 
@@ -151,6 +133,7 @@ static bool gsr_egl_load_gl(gsr_egl *self, void *library) {
         { (void**)&self->glGetTexLevelParameteriv, "glGetTexLevelParameteriv" },
         { (void**)&self->glTexImage2D, "glTexImage2D" },
         { (void**)&self->glCopyImageSubData, "glCopyImageSubData" },
+        { (void**)&self->glClearTexImage, "glClearTexImage" },
         { (void**)&self->glGenFramebuffers, "glGenFramebuffers" },
         { (void**)&self->glBindFramebuffer, "glBindFramebuffer" },
         { (void**)&self->glViewport, "glViewport" },
@@ -228,7 +211,7 @@ bool gsr_egl_load(gsr_egl *self, Display *dpy) {
         return false;
     }
 
-    if(!gsr_egl_mesa_load_egl(self)) {
+    if(!gsr_egl_proc_load_egl(self)) {
         dlclose(egl_lib);
         dlclose(gl_lib);
         memset(self, 0, sizeof(gsr_egl));
@@ -247,14 +230,21 @@ bool gsr_egl_load(gsr_egl *self, Display *dpy) {
     return true;
 }
 
-bool gsr_egl_make_context_current(gsr_egl *self) {
-    // TODO:
-    return true;
-    //return self->glXMakeContextCurrent(self->dpy, self->window, self->window, self->gl_context);
-}
-
 void gsr_egl_unload(gsr_egl *self) {
-    // TODO: Cleanup of egl resources
+    if(self->egl_context) {
+        self->eglDestroyContext(self->egl_display, self->egl_context);
+        self->egl_context = NULL;
+    }
+
+    if(self->egl_surface) {
+        self->eglDestroySurface(self->egl_display, self->egl_surface);
+        self->egl_surface = NULL;
+    }
+
+    if(self->egl_display) {
+        self->eglTerminate(self->egl_display);
+        self->egl_display = NULL;
+    }
 
     if(self->window) {
         XDestroyWindow(self->dpy, self->window);

@@ -121,8 +121,8 @@ static unsigned int gl_create_texture(gsr_capture_xcomposite_drm *cap_xcomp, int
 
     cap_xcomp->egl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     cap_xcomp->egl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    cap_xcomp->egl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    cap_xcomp->egl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    cap_xcomp->egl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    cap_xcomp->egl.glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 
     cap_xcomp->egl.glBindTexture(GL_TEXTURE_2D, 0);
     return texture_id;
@@ -403,6 +403,18 @@ static int gsr_capture_xcomposite_drm_start(gsr_capture *cap, AVCodecContext *vi
         return -1;
     }
 
+    if(!cap_xcomp->egl.eglExportDMABUFImageQueryMESA) {
+        fprintf(stderr, "gsr error: gsr_capture_xcomposite_start: could not find eglExportDMABUFImageQueryMESA\n");
+        gsr_egl_unload(&cap_xcomp->egl);
+        return -1;
+    }
+
+    if(!cap_xcomp->egl.eglExportDMABUFImageMESA) {
+        fprintf(stderr, "gsr error: gsr_capture_xcomposite_start: could not find eglExportDMABUFImageMESA\n");
+        gsr_egl_unload(&cap_xcomp->egl);
+        return -1;
+    }
+
     /* Disable vsync */
     cap_xcomp->egl.eglSwapInterval(cap_xcomp->egl.egl_display, 0);
 #if 0
@@ -589,6 +601,8 @@ static void free_desc(void *opaque, uint8_t *data) {
 static void gsr_capture_xcomposite_drm_tick(gsr_capture *cap, AVCodecContext *video_codec_context, AVFrame **frame) {
     gsr_capture_xcomposite_drm *cap_xcomp = cap->priv;
 
+    cap_xcomp->egl.glClear(GL_COLOR_BUFFER_BIT);
+
     if(!cap_xcomp->created_hw_frame) {
         cap_xcomp->created_hw_frame = true;
 
@@ -702,9 +716,11 @@ static void gsr_capture_xcomposite_drm_tick(gsr_capture *cap, AVCodecContext *vi
         if(res < 0) {
             fprintf(stderr, "av_hwframe_map failed: %d\n", res);
         }
-    }
 
-    cap_xcomp->egl.glClear(GL_COLOR_BUFFER_BIT);
+        // Clear texture with black background because the source texture (window_texture_get_opengl_texture_id(&cap_xcomp->window_texture))
+        // might be smaller than cap_xcomp->target_texture_id
+        cap_xcomp->egl.glClearTexImage(cap_xcomp->target_texture_id, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
 }
 
 static bool gsr_capture_xcomposite_drm_should_stop(gsr_capture *cap, bool *err) {
@@ -764,7 +780,7 @@ static int gsr_capture_xcomposite_drm_capture(gsr_capture *cap, AVFrame *frame) 
     vec2i source_size = cap_xcomp->texture_size;
 
     #if 1
-    // Requires opengl 4.2... TODO: Replace with earlier opengl if opengl < 4.2.
+    /* TODO: Remove this copy, which is only possible by using nvenc directly and encoding window_pixmap.target_texture_id */
     cap_xcomp->egl.glCopyImageSubData(
         window_texture_get_opengl_texture_id(&cap_xcomp->window_texture), GL_TEXTURE_2D, 0, 0, 0, 0,
         cap_xcomp->target_texture_id, GL_TEXTURE_2D, 0, 0, 0, 0,
@@ -808,6 +824,7 @@ static int gsr_capture_xcomposite_drm_capture(gsr_capture *cap, AVFrame *frame) 
 }
 
 static void gsr_capture_xcomposite_drm_destroy(gsr_capture *cap, AVCodecContext *video_codec_context) {
+    (void)video_codec_context;
     if(cap->priv) {
         free(cap->priv);
         cap->priv = NULL;

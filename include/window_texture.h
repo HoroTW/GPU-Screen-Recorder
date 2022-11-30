@@ -8,9 +8,6 @@ typedef struct {
     Window window;
     Pixmap pixmap;
     unsigned int texture_id;
-    unsigned int target_texture_id;
-    int texture_width;
-    int texture_height;
     int redirected;
     gsr_egl *egl;
 } WindowTexture;

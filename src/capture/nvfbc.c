@@ -344,8 +344,11 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap, AVCodecContext *video_codec
         cap_nvfbc->fbc_handle_created = false;
     }
 
-    av_buffer_unref(&video_codec_context->hw_device_ctx);
-    av_buffer_unref(&video_codec_context->hw_frames_ctx);
+    if(video_codec_context->hw_device_ctx)
+        av_buffer_unref(&video_codec_context->hw_device_ctx);
+    // Not needed because the above call to unref device ctx also frees this?
+    //if(video_codec_context->hw_frames_ctx)
+    //    av_buffer_unref(&video_codec_context->hw_frames_ctx);
     gsr_cuda_unload(&cap_nvfbc->cuda);
     return -1;
 }
@@ -413,8 +416,11 @@ static int gsr_capture_nvfbc_capture(gsr_capture *cap, AVFrame *frame) {
 static void gsr_capture_nvfbc_destroy(gsr_capture *cap, AVCodecContext *video_codec_context) {
     gsr_capture_nvfbc *cap_nvfbc = cap->priv;
     gsr_capture_nvfbc_destroy_session(cap);
-    av_buffer_unref(&video_codec_context->hw_device_ctx);
-    av_buffer_unref(&video_codec_context->hw_frames_ctx);
+    if(video_codec_context->hw_device_ctx)
+        av_buffer_unref(&video_codec_context->hw_device_ctx);
+    // Not needed because the above call to unref device ctx also frees this?
+    //if(video_codec_context->hw_frames_ctx)
+    //    av_buffer_unref(&video_codec_context->hw_frames_ctx);
     if(cap_nvfbc) {
         gsr_cuda_unload(&cap_nvfbc->cuda);
         dlclose(cap_nvfbc->library);

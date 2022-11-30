@@ -38,6 +38,12 @@ extern "C" {
 #include <deque>
 #include <future>
 
+typedef enum {
+    GPU_VENDOR_AMD,
+    GPU_VENDOR_INTEL,
+    GPU_VENDOR_NVIDIA
+} gpu_vendor;
+
 // TODO: Remove LIBAVUTIL_VERSION_MAJOR checks in the future when ubuntu, pop os LTS etc update ffmpeg to >= 5.0
 
 static const int VIDEO_STREAM_INDEX = 0;
@@ -322,70 +328,51 @@ static AVCodecContext *create_video_codec_context(AVPixelFormat pix_fmt,
     return codec_context;
 }
 
-#if 0
-static const AVCodec* find_h264_encoder() {
-    const AVCodec *codec = avcodec_find_encoder_by_name("h264_vaapi");
-    if(!codec)
-        codec = avcodec_find_encoder_by_name("vaapi_h264");
-    return codec;
+static bool check_if_codec_valid_for_hardware(const AVCodec *codec) {
+    bool success = false;
+    // Do not use AV_PIX_FMT_CUDA because we dont want to do full check with hardware context
+    AVCodecContext *codec_context = create_video_codec_context(AV_PIX_FMT_YUV420P, VideoQuality::VERY_HIGH, 60, codec, false);
+    codec_context->width = 1920;
+    codec_context->height = 1080;
+    if(codec_context) {
+        success = avcodec_open2(codec_context, codec_context->codec, NULL) == 0;
+        avcodec_free_context(&codec_context);
+    }
+    return success;
 }
 
-static const AVCodec* find_h265_encoder() {
-    const AVCodec *codec = avcodec_find_encoder_by_name("hevc_vaapi");
+static const AVCodec* find_h264_encoder(gpu_vendor vendor) {
+    const AVCodec *codec = avcodec_find_encoder_by_name(vendor == GPU_VENDOR_NVIDIA ? "h264_nvenc" : "h264_vaapi");
     if(!codec)
-        codec = avcodec_find_encoder_by_name("vaapi_hevc");
-    return codec;
-}
-#else
-static const AVCodec* find_h264_encoder() {
-    const AVCodec *codec = avcodec_find_encoder_by_name("h264_nvenc");
-    if(!codec)
-        codec = avcodec_find_encoder_by_name("nvenc_h264");
+        codec = avcodec_find_encoder_by_name(vendor == GPU_VENDOR_NVIDIA ? "nvenc_h264" : "vaapi_h264");
 
     static bool checked = false;
+    static bool checked_success = true;
     if(!checked) {
         checked = true;
-        // Do not use AV_PIX_FMT_CUDA because we dont want to do full check with hardware context
-        AVCodecContext *codec_context = create_video_codec_context(AV_PIX_FMT_YUV420P, VideoQuality::VERY_HIGH, 60, codec, false);
-        codec_context->width = 1920;
-        codec_context->height = 1080;
-        if(codec_context) {
-            if (avcodec_open2(codec_context, codec_context->codec, NULL) < 0) {
-                avcodec_free_context(&codec_context);
-                return nullptr;
-            }
-            avcodec_free_context(&codec_context);
-        }
+        if(!check_if_codec_valid_for_hardware(codec))
+            checked_success = false;
     }
-    return codec;
+    return checked_success ? codec : nullptr;
 }
 
-static const AVCodec* find_h265_encoder() {
-    const AVCodec *codec = avcodec_find_encoder_by_name("hevc_nvenc");
+static const AVCodec* find_h265_encoder(gpu_vendor vendor) {
+    const AVCodec *codec = avcodec_find_encoder_by_name(vendor == GPU_VENDOR_NVIDIA ? "hevc_nvenc" : "hevc_vaapi");
     if(!codec)
-        codec = avcodec_find_encoder_by_name("nvenc_hevc");
+        codec = avcodec_find_encoder_by_name(vendor == GPU_VENDOR_NVIDIA ? "nvenc_hevc" : "vaapi_hevc");
 
     if(!codec)
         return nullptr;
 
     static bool checked = false;
+    static bool checked_success = true;
     if(!checked) {
         checked = true;
-        // Do not use AV_PIX_FMT_CUDA because we dont want to do full check with hardware context
-        AVCodecContext *codec_context = create_video_codec_context(AV_PIX_FMT_YUV420P, VideoQuality::VERY_HIGH, 60, codec, false);
-        codec_context->width = 1920;
-        codec_context->height = 1080;
-         if(codec_context) {
-            if (avcodec_open2(codec_context, codec_context->codec, NULL) < 0) {
-                avcodec_free_context(&codec_context);
-                return nullptr;
-            }
-            avcodec_free_context(&codec_context);
-        }
+        if(!check_if_codec_valid_for_hardware(codec))
+            checked_success = false;
     }
-    return codec;
+    return checked_success ? codec : nullptr;
 }
-#endif
 
 static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
     int ret;
@@ -499,11 +486,12 @@ static void open_video(AVCodecContext *codec_context, VideoQuality video_quality
 }
 
 static void usage() {
-    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id> [-c <container_format>] -f <fps> [-a <audio_input>...] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
+    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id|monitor|focused> [-c <container_format>] [-s WxH] -f <fps> [-a <audio_input>...] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
     fprintf(stderr, "OPTIONS:\n");
-    fprintf(stderr, "  -w    Window to record or a display, \"screen\" or \"screen-direct\". The display is the display name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded and they are recorded in h265 (aka hevc)."
+    fprintf(stderr, "  -w    Window to record, a display, \"screen\", \"screen-direct\" or \"focused\". The display is the display (monitor) name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded. If this is \"focused\" then the currently focused window is recorded. When recording the focused window then the -s option has to be used as well.\n"
         "\"screen-direct\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Recording a display requires a gpu with NvFBC support.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv. Only required if no output file is specified or if recording in replay buffer mode. If an output file is specified and -c is not used then the container format is determined from the output filename extension.\n");
+    fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. This option is only supported (and required) when -w is \"focused\".\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. A name can be given to the audio input device by prefixing the audio input with <name>/, for example \"dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor\". Optional, no audio track is added by default.\n");
     fprintf(stderr, "  -q    Video quality. Should be either 'medium', 'high', 'very_high' or 'ultra'. 'high' is the recommended option when live streaming or when you have a slower harddrive. Optional, set to 'very_high' be default.\n");
@@ -732,12 +720,6 @@ static bool is_livestream_path(const char *str) {
         return false;
 }
 
-typedef enum {
-    GPU_VENDOR_AMD,
-    GPU_VENDOR_INTEL,
-    GPU_VENDOR_NVIDIA
-} gpu_vendor;
-
 typedef struct {
     gpu_vendor vendor;
     int gpu_version; /* 0 if unknown */
@@ -792,10 +774,9 @@ int main(int argc, char **argv) {
 
     std::map<std::string, Arg> args = {
         { "-w", Arg { {}, false, false } },
-        //{ "-s", Arg { nullptr, true } },
         { "-c", Arg { {}, true, false } },
         { "-f", Arg { {}, false, false } },
-        //{ "-s", Arg { {}, true, false } },
+        { "-s", Arg { {}, true, false } },
         { "-a", Arg { {}, true, true } },
         { "-q", Arg { {}, true, false } },
         { "-o", Arg { {}, true, false } },
@@ -927,12 +908,73 @@ int main(int argc, char **argv) {
         very_old_gpu = true;
     }
 
+    // TODO: Remove once gpu screen recorder supports amd and intel properly
+    if(gpu_inf.vendor != GPU_VENDOR_NVIDIA) {
+        fprintf(stderr, "Error: gpu-screen-recorder does currently only support nvidia gpus\n");
+        return 2;
+    }
+
+    const char *screen_region = args["-s"].value();
     const char *window_str = args["-w"].value();
 
+    if(screen_region && strcmp(window_str, "focused") != 0) {
+        fprintf(stderr, "Error: option -s is only available when using -w focused\n");
+        usage();
+    }
+
     gsr_capture *capture = nullptr;
-    if(contains_non_hex_number(window_str)) {
+    if(strcmp(window_str, "focused") == 0) {
+        if(!screen_region) {
+            fprintf(stderr, "Error: option -s is required when using -w focused\n");
+            usage();
+        }
+
+        vec2i region_size = { 0, 0 };
+        if(sscanf(screen_region, "%dx%d", &region_size.x, &region_size.y) != 2) {
+            fprintf(stderr, "Error: invalid value for option -s '%s', expected a value in format WxH\n", screen_region);
+            usage();
+        }
+
+        if(region_size.x <= 0 || region_size.y <= 0) {
+            fprintf(stderr, "Error: invalud value for option -s '%s', expected width and height to be greater than 0\n", screen_region);
+            usage();
+        }
+
+        switch(gpu_inf.vendor) {
+            case GPU_VENDOR_AMD: {
+                gsr_capture_xcomposite_drm_params xcomposite_params;
+                xcomposite_params.window = 0;
+                xcomposite_params.follow_focused = true;
+                xcomposite_params.region_size = region_size;
+                capture = gsr_capture_xcomposite_drm_create(&xcomposite_params);
+                if(!capture)
+                    return 1;
+                break;
+            }
+            case GPU_VENDOR_INTEL: {
+                gsr_capture_xcomposite_drm_params xcomposite_params;
+                xcomposite_params.window = 0;
+                xcomposite_params.follow_focused = true;
+                xcomposite_params.region_size = region_size;
+                capture = gsr_capture_xcomposite_drm_create(&xcomposite_params);
+                if(!capture)
+                    return 1;
+                break;
+            }
+            case GPU_VENDOR_NVIDIA: {
+                gsr_capture_xcomposite_cuda_params xcomposite_params;
+                xcomposite_params.window = 0;
+                xcomposite_params.follow_focused = true;
+                xcomposite_params.region_size = region_size;
+                capture = gsr_capture_xcomposite_cuda_create(&xcomposite_params);
+                if(!capture)
+                    return 1;
+                break;
+            }
+        }
+    } else if(contains_non_hex_number(window_str)) {
         if(gpu_inf.vendor != GPU_VENDOR_NVIDIA) {
-            fprintf(stderr, "Error: recording a monitor is only supported on NVIDIA right now\n");
+            fprintf(stderr, "Error: recording a monitor is only supported on NVIDIA right now. Record \"focused\" instead for convenient fullscreen window recording\n");
             return 2;
         }
 
@@ -978,6 +1020,8 @@ int main(int argc, char **argv) {
             case GPU_VENDOR_AMD: {
                 gsr_capture_xcomposite_drm_params xcomposite_params;
                 xcomposite_params.window = src_window_id;
+                xcomposite_params.follow_focused = false;
+                xcomposite_params.region_size = { 0, 0 };
                 capture = gsr_capture_xcomposite_drm_create(&xcomposite_params);
                 if(!capture)
                     return 1;
@@ -986,6 +1030,8 @@ int main(int argc, char **argv) {
             case GPU_VENDOR_INTEL: {
                 gsr_capture_xcomposite_drm_params xcomposite_params;
                 xcomposite_params.window = src_window_id;
+                xcomposite_params.follow_focused = false;
+                xcomposite_params.region_size = { 0, 0 };
                 capture = gsr_capture_xcomposite_drm_create(&xcomposite_params);
                 if(!capture)
                     return 1;
@@ -994,6 +1040,8 @@ int main(int argc, char **argv) {
             case GPU_VENDOR_NVIDIA: {
                 gsr_capture_xcomposite_cuda_params xcomposite_params;
                 xcomposite_params.window = src_window_id;
+                xcomposite_params.follow_focused = false;
+                xcomposite_params.region_size = { 0, 0 };
                 capture = gsr_capture_xcomposite_cuda_create(&xcomposite_params);
                 if(!capture)
                     return 1;
@@ -1052,7 +1100,7 @@ int main(int argc, char **argv) {
     const double target_fps = 1.0 / (double)fps;
 
     if(strcmp(codec_to_use, "auto") == 0) {
-        const AVCodec *h265_codec = find_h265_encoder();
+        const AVCodec *h265_codec = find_h265_encoder(gpu_inf.vendor);
 
         // h265 generally allows recording at a higher resolution than h264 on nvidia cards. On a gtx 1080 4k is the max resolution for h264 but for h265 it's 8k.
         // Another important info is that when recording at a higher fps than.. 60? h265 has very bad performance. For example when recording at 144 fps the fps drops to 1
@@ -1081,10 +1129,10 @@ int main(int argc, char **argv) {
     const AVCodec *video_codec_f = nullptr;
     switch(video_codec) {
         case VideoCodec::H264:
-            video_codec_f = find_h264_encoder();
+            video_codec_f = find_h264_encoder(gpu_inf.vendor);
             break;
         case VideoCodec::H265:
-            video_codec_f = find_h265_encoder();
+            video_codec_f = find_h265_encoder(gpu_inf.vendor);
             break;
     }
 
@@ -1104,7 +1152,7 @@ int main(int argc, char **argv) {
     AVStream *video_stream = nullptr;
     std::vector<AudioTrack> audio_tracks;
 
-    AVCodecContext *video_codec_context = create_video_codec_context(AV_PIX_FMT_CUDA, quality, fps, video_codec_f, is_livestream);
+    AVCodecContext *video_codec_context = create_video_codec_context(gpu_inf.vendor == GPU_VENDOR_NVIDIA ? AV_PIX_FMT_CUDA : AV_PIX_FMT_VAAPI, quality, fps, video_codec_f, is_livestream);
     if(replay_buffer_size_secs == -1)
         video_stream = create_stream(av_format_context, video_codec_context);
 

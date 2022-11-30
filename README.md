@@ -27,7 +27,7 @@ If you are running another distro then you can run `install.sh` as root: `sudo .
 You can also install gpu screen recorder ([the gtk gui version](https://git.dec05eba.com/gpu-screen-recorder-gtk/)) from [flathub](https://flathub.org/apps/details/com.dec05eba.gpu_screen_recorder).
 
 # Dependencies
-`libgl (and libegl) (libglvnd), ffmpeg, libx11, libxcomposite, libpulse`. You need to additionally have `libcuda.so` installed when you run `gpu-screen-recorder` and `libnvidia-fbc.so.1` when using nvfbc.\
+`libglvnd (which provides libgl and libegl), (mesa if you are using an amd or intel gpu), ffmpeg, libx11, libxcomposite, libpulse`. You need to additionally have `libcuda.so` installed when you run `gpu-screen-recorder` and `libnvidia-fbc.so.1` when using nvfbc.\
 Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
 
 # How to use
@@ -56,5 +56,5 @@ FFMPEG only uses the GPU with CUDA when doing transcoding from an input video to
 # TODO
 * Dynamically change bitrate/resolution to match desired fps. This would be helpful when streaming for example, where the encode output speed also depends on upload speed to the streaming service.
 * Show cursor when recording. Currently the cursor is not visible when recording a window.
-* Implement opengl injection to capture texture. This fixes composition issues and (VRR) without having to use NvFBC direct capture.
+* Implement opengl injection to capture texture. This fixes VRR without having to use NvFBC direct capture.
 * Always use direct capture with NvFBC once the capture issue in mpv fullscreen has been resolved (maybe detect if direct capture fails in nvfbc and switch to non-direct recording. NvFBC says if direct capture fails).

@@ -99,12 +99,16 @@ typedef struct {
 
     EGLDisplay (*eglGetDisplay)(EGLNativeDisplayType display_id);
     unsigned int (*eglInitialize)(EGLDisplay dpy, int32_t *major, int32_t *minor);
+    unsigned int (*eglTerminate)(EGLDisplay dpy);
     unsigned int (*eglChooseConfig)(EGLDisplay dpy, const int32_t *attrib_list, EGLConfig *configs, int32_t config_size, int32_t *num_config);
     EGLSurface (*eglCreateWindowSurface)(EGLDisplay dpy, EGLConfig config, EGLNativeWindowType win, const int32_t *attrib_list);
     EGLContext (*eglCreateContext)(EGLDisplay dpy, EGLConfig config, EGLContext share_context, const int32_t *attrib_list);
     unsigned int (*eglMakeCurrent)(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx);
     EGLSurface (*eglCreatePixmapSurface)(EGLDisplay dpy, EGLConfig config, EGLNativePixmapType pixmap, const int32_t *attrib_list);
     EGLImage (*eglCreateImage)(EGLDisplay dpy, EGLContext ctx, unsigned int target, EGLClientBuffer buffer, const intptr_t *attrib_list);
+    unsigned int (*eglDestroyContext)(EGLDisplay dpy, EGLContext ctx);
+    unsigned int (*eglDestroySurface)(EGLDisplay dpy, EGLSurface surface);
+    unsigned int (*eglDestroyImage)(EGLDisplay dpy, EGLImage image);
     unsigned int (*eglBindTexImage)(EGLDisplay dpy, EGLSurface surface, int32_t buffer);
     unsigned int (*eglSwapInterval)(EGLDisplay dpy, int32_t interval);
     unsigned int (*eglSwapBuffers)(EGLDisplay dpy, EGLSurface surface);
@@ -125,6 +129,7 @@ typedef struct {
     void (*glGetTexLevelParameteriv)(unsigned int target, int level, unsigned int pname, int *params);
     void (*glTexImage2D)(unsigned int target, int level, int internalFormat, int width, int height, int border, unsigned int format, unsigned int type, const void *pixels);
     void (*glCopyImageSubData)(unsigned int srcName, unsigned int srcTarget, int srcLevel, int srcX, int srcY, int srcZ, unsigned int dstName, unsigned int dstTarget, int dstLevel, int dstX, int dstY, int dstZ, int srcWidth, int srcHeight, int srcDepth);
+    void (*glClearTexImage)(unsigned int texture, unsigned int level, unsigned int format, unsigned int type, const void *data);
     void (*glGenFramebuffers)(int n, unsigned int *framebuffers);
     void (*glBindFramebuffer)(unsigned int target, unsigned int framebuffer);
     void (*glViewport)(int x, int y, int width, int height);
@@ -164,7 +169,6 @@ typedef struct {
 } gsr_egl;
 
 bool gsr_egl_load(gsr_egl *self, Display *dpy);
-bool gsr_egl_make_context_current(gsr_egl *self);
 void gsr_egl_unload(gsr_egl *self);
 
 #endif /* GSR_EGL_H */

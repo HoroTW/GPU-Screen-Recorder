@@ -9,6 +9,8 @@ typedef struct _XDisplay Display;
 
 typedef struct {
     Window window;
+    bool follow_focused; /* If this is set then |window| is ignored */
+    vec2i region_size; /* This is currently only used with |follow_focused| */
 } gsr_capture_xcomposite_drm_params;
 
 gsr_capture* gsr_capture_xcomposite_drm_create(const gsr_capture_xcomposite_drm_params *params);

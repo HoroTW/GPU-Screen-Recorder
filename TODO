@@ -1,6 +1,4 @@
 Check for reparent.
-Only add window to list if its the window is a topmost window.
-Track window damages and only update then. That is better for output file size.
 Quickly changing workspace and back while recording under i3 breaks the screen recorder. i3 probably unmaps windows in other workspaces.
 See https://trac.ffmpeg.org/wiki/EncodingForStreamingSites for optimizing streaming.
 Add option to merge audio tracks into one (muxing?) by adding multiple audio streams in one -a arg separated by comma.
@@ -9,9 +7,9 @@ Allow setting a different output resolution than the input resolution.
 Use mov+faststart.
 Allow recording all monitors/selected monitor without nvfbc by recording the compositor proxy window and only recording the part that matches the monitor(s).
 Allow recording a region by recording the compositor proxy window / nvfbc window and copying part of it.
-Resizing the target window to be smaller than the initial size is buggy. The window texture ends up duplicated in the video.
-Handle frames (especially for applications with rounded client-side decorations, such as gnome applications. They are huge).
 Use nvenc directly, which allows removing the use of cuda.
 Handle xrandr monitor change in nvfbc.
-Add option to track the focused window. In that case the video size should dynamically change (change frame resolution) to match the window size and it should update when the window resizes.
-Add option for 4:4:4 chroma sampling for the output video.
+Add option for yuv 4:4:4 chroma sampling for the output video.
+Implement follow focused in drm.
+Support fullscreen capture on amd/intel using external kms process.
+Support amf and qsv.
