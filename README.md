@@ -28,7 +28,6 @@ You can also install gpu screen recorder ([the gtk gui version](https://git.dec0
 
 # Dependencies
 `libglvnd (which provides libgl and libegl), (mesa if you are using an amd or intel gpu), ffmpeg, libx11, libxcomposite, libpulse`. You need to additionally have `libcuda.so` installed when you run `gpu-screen-recorder` and `libnvidia-fbc.so.1` when using nvfbc.\
-Recording monitors requires a gpu with NvFBC support (note: this is not required when recording a single window!). Normally only tesla and quadro gpus support this, but by using [nvidia-patch](https://github.com/keylase/nvidia-patch) or [nvlax](https://github.com/illnyang/nvlax) you can do this on all gpus that support nvenc as well (gpus as old as the nvidia 600 series), provided you are not using outdated gpu drivers.
 
 # How to use
 Run `scripts/interactive.sh` or run gpu-screen-recorder directly, for example: `gpu-screen-recorder -w $(xdotool selectwindow) -c mp4 -f 60 -a "$(pactl get-default-sink).monitor" -o test_video.mp4`\
