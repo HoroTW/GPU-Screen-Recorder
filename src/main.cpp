@@ -356,6 +356,8 @@ static const AVCodec* find_h264_encoder(gpu_vendor vendor) {
     return checked_success ? codec : nullptr;
 }
 
+// TODO: Disable under intel/amd?
+
 static const AVCodec* find_h265_encoder(gpu_vendor vendor) {
     const AVCodec *codec = avcodec_find_encoder_by_name(vendor == GPU_VENDOR_NVIDIA ? "hevc_nvenc" : "hevc_vaapi");
     if(!codec)

@@ -30,12 +30,12 @@ You can also install gpu screen recorder ([the gtk gui version](https://git.dec0
 `libglvnd (which provides libgl and libegl), (mesa if you are using an amd or intel gpu), ffmpeg, libx11, libxcomposite, libpulse`. You need to additionally have `libcuda.so` installed when you run `gpu-screen-recorder` and `libnvidia-fbc.so.1` when using nvfbc.\
 
 # How to use
-Run `scripts/interactive.sh` or run gpu-screen-recorder directly, for example: `gpu-screen-recorder -w $(xdotool selectwindow) -c mp4 -f 60 -a "$(pactl get-default-sink).monitor" -o test_video.mp4`\
-Then stop the screen recorder with Ctrl+C, which will also save the recording.\
+Run `scripts/interactive.sh` or run gpu-screen-recorder directly, for example: `gpu-screen-recorder -w $(xdotool selectwindow) -c mp4 -f 60 -a "$(pactl get-default-sink).monitor" -o test_video.mp4` then stop the screen recorder with Ctrl+C, which will also save the recording.\
 Send signal SIGUSR1 (`killall -SIGUSR1 gpu-screen-recorder`) to gpu-screen-recorder when in replay mode to save the replay. The paths to the saved files is output to stdout after the recording is saved.\
 You can find the default output audio device (headset, speakers (in other words, desktop audio)) with the command `pactl get-default-sink`. Add `monitor` to the end of that to use that as an audio input in gpu-screen-recorder.\
 You can find the default input audio device (microphone) with the command `pactl get-default-source`. This input should not have `monitor` added to the end when used in gpu-screen-recorder.\
 Example of recording both desktop audio and microphone: `gpu-screen-recorder -w $(xdotool selectwindow) -c mp4 -f 60 -a "$(pactl get-default-sink).monitor" -a "$(pactl get-default-source)" -o test_video.mp4`.\
+A name (that is visible to pipewire) can be given to an audio input device by prefixing the audio input with `<name>/`, for example `dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor`.\
 Note that if you use multiple audio inputs then they are each recorded into separate audio tracks in the video file. There is currently no option to merge audio tracks, but it's a planned feature. For now I recommend using gpwgraph if you are using pipewire. Gpwgraph allows you to merge multiple audio inputs into one with a simple gui. If you use pulseaudio then you need to create a virtual sink, which is a bit more complex.
 
 There is also a gui for the gpu-screen-recorder called [gpu-screen-recorder-gtk](https://git.dec05eba.com/gpu-screen-recorder-gtk/).
