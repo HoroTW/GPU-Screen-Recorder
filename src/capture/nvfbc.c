@@ -172,7 +172,7 @@ static bool ffmpeg_create_cuda_contexts(gsr_capture_nvfbc *cap_nvfbc, AVCodecCon
         fprintf(stderr, "gsr error: cuda_create_codec_context failed: failed to initialize hardware frame context "
                         "(note: ffmpeg version needs to be > 4.0)\n");
         av_buffer_unref(&device_ctx);
-        av_buffer_unref(&frame_context);
+        //av_buffer_unref(&frame_context);
         return false;
     }
 

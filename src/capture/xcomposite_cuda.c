@@ -126,7 +126,7 @@ static bool cuda_create_codec_context(gsr_capture_xcomposite_cuda *cap_xcomp, AV
         fprintf(stderr, "Error: Failed to initialize hardware frame context "
                         "(note: ffmpeg version needs to be > 4.0)\n");
         av_buffer_unref(&device_ctx);
-        av_buffer_unref(&frame_context);
+        //av_buffer_unref(&frame_context);
         cap_xcomp->cuda.cuCtxPopCurrent_v2(&old_ctx);
         return false;
     }

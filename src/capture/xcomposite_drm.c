@@ -80,7 +80,7 @@ static bool drm_create_codec_context(gsr_capture_xcomposite_drm *cap_xcomp, AVCo
         fprintf(stderr, "Error: Failed to initialize hardware frame context "
                         "(note: ffmpeg version needs to be > 4.0)\n");
         av_buffer_unref(&device_ctx);
-        av_buffer_unref(&frame_context);
+        //av_buffer_unref(&frame_context);
         return false;
     }
 
