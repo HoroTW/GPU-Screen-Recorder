@@ -18,7 +18,6 @@ screen-direct capture has been temporary disabled as it causes issues with stutt
 When recording Legend of Zelda Breath of the Wild at 4k, fps drops from 30 to 7 when using OBS Studio + nvenc, however when using this screen recorder the fps remains at 30.\
 When recording GTA V at 4k on highest settings, fps drops from 60 to 23 when using obs-nvfbc + nvenc, however when using this screen recorder the fps only drops to 55. The quality is also much better when using gpu-screen-recorder.\
 It is recommended to save the video to a SSD because of the large file size, which a slow HDD might not be fast enough to handle.\
-Using NvFBC (recording the monitor/screen) is not faster than not using NvFBC (recording a single window) with gpu screen recorder, in fact it might be a tiny bit slower.
 
 # Installation
 If you are running an Arch Linux based distro, then you can find gpu screen recorder on aur under the name gpu-screen-recorder-git (`yay -S gpu-screen-recorder-git`).\
