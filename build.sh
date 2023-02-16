@@ -1,7 +1,7 @@
 #!/bin/sh -e
 
 #libdrm
-dependencies="libavcodec libavformat libavutil x11 xcomposite xrandr libpulse libswresample"
+dependencies="libavcodec libavformat libavutil x11 xcomposite xrandr libpulse libswresample libavfilter"
 includes="$(pkg-config --cflags $dependencies)"
 libs="$(pkg-config --libs $dependencies) -ldl -pthread -lm"
 gcc -c src/capture/capture.c -O2 -g0 -DNDEBUG $includes

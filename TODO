@@ -1,7 +1,6 @@
 Check for reparent.
 Quickly changing workspace and back while recording under i3 breaks the screen recorder. i3 probably unmaps windows in other workspaces.
 See https://trac.ffmpeg.org/wiki/EncodingForStreamingSites for optimizing streaming.
-Add option to merge audio tracks into one (muxing?) by adding multiple audio streams in one -a arg separated by comma.
 Look at VK_EXT_external_memory_dma_buf.
 Allow setting a different output resolution than the input resolution.
 Use mov+faststart.
@@ -14,3 +13,4 @@ Implement follow focused in drm.
 Support fullscreen capture on amd/intel using external kms process.
 Support amf and qsv.
 Disable flipping on nvidia? this might fix some stuttering issues on some setups. See NvCtrlGetAttribute/NvCtrlSetAttributeAndGetStatus NV_CTRL_SYNC_TO_VBLANK https://github.com/NVIDIA/nvidia-settings/blob/d5f022976368cbceb2f20b838ddb0bf992f0cfb9/src/gtk%2B-2.x/ctkopengl.c.
+Replays seem to have some issues with audio/video. Why?

@@ -31,6 +31,10 @@ struct AudioInput {
     std::string description;
 };
 
+struct MergedAudioInputs {
+    std::vector<AudioInput> audio_inputs;
+};
+
 /*
     Get a sound device by name, returning the device into the @device parameter.
     The device should be closed with @sound_device_close after it has been used

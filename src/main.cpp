@@ -33,6 +33,9 @@ extern "C" {
 #include <libswresample/swresample.h>
 #include <libavutil/avutil.h>
 #include <libavutil/time.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 }
 
 #include <deque>
@@ -390,6 +393,7 @@ static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
         exit(1);
     }
 
+    frame->sample_rate = audio_codec_context->sample_rate;
     frame->nb_samples = audio_codec_context->frame_size;
     frame->format = audio_codec_context->sample_fmt;
 #if LIBAVCODEC_VERSION_MAJOR < 60
@@ -495,7 +499,7 @@ static void usage() {
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv. Only required if no output file is specified or if recording in replay buffer mode. If an output file is specified and -c is not used then the container format is determined from the output filename extension.\n");
     fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. This option is only supported (and required) when -w is \"focused\".\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
-    fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. A name can be given to the audio input device by prefixing the audio input with <name>/, for example \"dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor\". Optional, no audio track is added by default.\n");
+    fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. A name can be given to the audio input device by prefixing the audio input with <name>/, for example \"dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor\". Multiple audio devices can be merged into one audio track by using \"|\" as a separator into one -a argument, for example: -a \"alsa_output1|alsa_output2\". Optional, no audio track is added by default.\n");
     fprintf(stderr, "  -q    Video quality. Should be either 'medium', 'high', 'very_high' or 'ultra'. 'high' is the recommended option when live streaming or when you have a slower harddrive. Optional, set to 'very_high' be default.\n");
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
@@ -572,16 +576,23 @@ static AVStream* create_stream(AVFormatContext *av_format_context, AVCodecContex
     return stream;
 }
 
+struct AudioDevice {
+    SoundDevice sound_device;
+    AudioInput audio_input;
+    AVFilterContext *src_filter_ctx = nullptr;
+    std::thread thread; // TODO: Instead of having a thread for each track, have one thread for all threads and read the data with non-blocking read
+};
+
 struct AudioTrack {
     AVCodecContext *codec_context = nullptr;
     AVFrame *frame = nullptr;
     AVStream *stream = nullptr;
 
-    SoundDevice sound_device;
-    std::thread thread; // TODO: Instead of having a thread for each track, have one thread for all threads and read the data with non-blocking read
-
+    std::vector<AudioDevice> audio_devices;
+    AVFilterGraph *graph = nullptr;
+    AVFilterContext *sink = nullptr;
+    int64_t pts = 0;
     int stream_index = 0;
-    AudioInput audio_input;
 };
 
 static std::future<void> save_replay_thread;
@@ -700,15 +711,34 @@ static void save_replay_async(AVCodecContext *video_codec_context, int video_str
     });
 }
 
-static AudioInput parse_audio_input_arg(const char *str) {
-    AudioInput audio_input;
-    audio_input.name = str;
-    const size_t index = audio_input.name.find('/');
-    if(index != std::string::npos) {
-        audio_input.description = audio_input.name.substr(0, index);
-        audio_input.name.erase(audio_input.name.begin(), audio_input.name.begin() + index + 1);
+static void split_string(const std::string &str, char delimiter, std::function<bool(const char*,size_t)> callback) {
+    size_t index = 0;
+    while(index < str.size()) {
+        size_t end_index = str.find(delimiter, index);
+        if(end_index == std::string::npos)
+            end_index = str.size();
+
+        if(!callback(&str[index], end_index - index))
+            break;
+
+        index = end_index + 1;
     }
-    return audio_input;
+}
+
+static std::vector<AudioInput> parse_audio_input_arg(const char *str) {
+    std::vector<AudioInput> audio_inputs;
+    split_string(str, '|', [&audio_inputs](const char *sub, size_t size) {
+        AudioInput audio_input;
+        audio_input.name.assign(sub, size);
+        const size_t index = audio_input.name.find('/');
+        if(index != std::string::npos) {
+            audio_input.description = audio_input.name.substr(0, index);
+            audio_input.name.erase(audio_input.name.begin(), audio_input.name.begin() + index + 1);
+        }
+        audio_inputs.push_back(std::move(audio_input));
+        return true;
+    });
+    return audio_inputs;
 }
 
 // TODO: Does this match all livestreaming cases?
@@ -768,6 +798,111 @@ static bool gl_get_gpu_info(Display *dpy, gpu_info *info) {
     return supported;
 }
 
+// TODO: Proper cleanup
+static int init_filter_graph(AVCodecContext *audio_codec_context, AVFilterGraph **graph, AVFilterContext **sink, std::vector<AVFilterContext*> &src_filter_ctx, size_t num_sources)
+{
+    char ch_layout[64];
+    int err = 0;
+ 
+    AVFilterGraph *filter_graph = avfilter_graph_alloc();
+    if (!filter_graph) {
+        fprintf(stderr, "Unable to create filter graph.\n");
+        return AVERROR(ENOMEM);
+    }
+ 
+    for(size_t i = 0; i < num_sources; ++i) {
+        const AVFilter *abuffer = avfilter_get_by_name("abuffer");
+        if (!abuffer) {
+            fprintf(stderr, "Could not find the abuffer filter.\n");
+            return AVERROR_FILTER_NOT_FOUND;
+        }
+    
+        AVFilterContext *abuffer_ctx = avfilter_graph_alloc_filter(filter_graph, abuffer, NULL);
+        if (!abuffer_ctx) {
+            fprintf(stderr, "Could not allocate the abuffer instance.\n");
+            return AVERROR(ENOMEM);
+        }
+    
+        #if LIBAVCODEC_VERSION_MAJOR < 60
+        av_get_channel_layout_string(ch_layout, sizeof(ch_layout), 0, AV_CH_LAYOUT_STEREO);
+        #else
+        av_channel_layout_describe(&audio_codec_context->ch_layout, ch_layout, sizeof(ch_layout));
+        #endif
+        av_opt_set    (abuffer_ctx, "channel_layout", ch_layout,                            AV_OPT_SEARCH_CHILDREN);
+        av_opt_set    (abuffer_ctx, "sample_fmt",     av_get_sample_fmt_name(audio_codec_context->sample_fmt), AV_OPT_SEARCH_CHILDREN);
+        av_opt_set_q  (abuffer_ctx, "time_base",      { 1, audio_codec_context->sample_rate },  AV_OPT_SEARCH_CHILDREN);
+        av_opt_set_int(abuffer_ctx, "sample_rate",    audio_codec_context->sample_rate,                     AV_OPT_SEARCH_CHILDREN);
+    
+        err = avfilter_init_str(abuffer_ctx, NULL);
+        if (err < 0) {
+            fprintf(stderr, "Could not initialize the abuffer filter.\n");
+            return err;
+        }
+
+        src_filter_ctx.push_back(abuffer_ctx);
+    }
+
+    const AVFilter *mix_filter = avfilter_get_by_name("amix");
+    if (!mix_filter) {
+        av_log(NULL, AV_LOG_ERROR, "Could not find the mix filter.\n");
+        return AVERROR_FILTER_NOT_FOUND;
+    }
+    
+    char args[512];
+    snprintf(args, sizeof(args), "inputs=%d", (int)num_sources);
+	
+    AVFilterContext *mix_ctx;
+	err = avfilter_graph_create_filter(&mix_ctx, mix_filter, "amix",
+                                       args, NULL, filter_graph);
+
+    if (err < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Cannot create audio amix filter\n");
+        return err;
+    }
+ 
+    const AVFilter *abuffersink = avfilter_get_by_name("abuffersink");
+    if (!abuffersink) {
+        fprintf(stderr, "Could not find the abuffersink filter.\n");
+        return AVERROR_FILTER_NOT_FOUND;
+    }
+ 
+    AVFilterContext *abuffersink_ctx = avfilter_graph_alloc_filter(filter_graph, abuffersink, "sink");
+    if (!abuffersink_ctx) {
+        fprintf(stderr, "Could not allocate the abuffersink instance.\n");
+        return AVERROR(ENOMEM);
+    }
+ 
+    err = avfilter_init_str(abuffersink_ctx, NULL);
+    if (err < 0) {
+        fprintf(stderr, "Could not initialize the abuffersink instance.\n");
+        return err;
+    }
+ 
+    err = 0;
+    for(size_t i = 0; i < src_filter_ctx.size(); ++i) {
+        AVFilterContext *src_ctx = src_filter_ctx[i];
+        if (err >= 0)
+            err = avfilter_link(src_ctx, 0, mix_ctx, i);
+    }
+    if (err >= 0)
+        err = avfilter_link(mix_ctx, 0, abuffersink_ctx, 0);
+    if (err < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Error connecting filters\n");
+        return err;
+    }
+ 
+    err = avfilter_graph_config(filter_graph, NULL);
+    if (err < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Error configuring the filter graph\n");
+        return err;
+    }
+ 
+    *graph = filter_graph;
+    *sink  = abuffersink_ctx;
+ 
+    return 0;
+}
+
 int main(int argc, char **argv) {
     signal(SIGINT, int_handler);
     signal(SIGUSR1, save_replay_handler);
@@ -824,32 +959,32 @@ int main(int argc, char **argv) {
 
     const Arg &audio_input_arg = args["-a"];
     const std::vector<AudioInput> audio_inputs = get_pulseaudio_inputs();
-    std::vector<AudioInput> requested_audio_inputs;
+    std::vector<MergedAudioInputs> requested_audio_inputs;
 
     // Manually check if the audio inputs we give exist. This is only needed for pipewire, not pulseaudio.
     // Pipewire instead DEFAULTS TO THE DEFAULT AUDIO INPUT. THAT'S RETARDED.
     // OH, YOU MISSPELLED THE AUDIO INPUT? FUCK YOU
     for(const char *audio_input : audio_input_arg.values) {
-        requested_audio_inputs.push_back(parse_audio_input_arg(audio_input));
-        AudioInput &request_audio_input = requested_audio_inputs.back();
-
-        bool match = false;
-        for(const auto &existing_audio_input : audio_inputs) {
-            if(strcmp(request_audio_input.name.c_str(), existing_audio_input.name.c_str()) == 0) {
-                if(request_audio_input.description.empty())
-                    request_audio_input.description = "gsr-" + existing_audio_input.description;
-
-                match = true;
-                break;
-            }
-        }
-
-        if(!match) {
-            fprintf(stderr, "Error: Audio input device '%s' is not a valid audio device, expected one of:\n", request_audio_input.name.c_str());
+        requested_audio_inputs.push_back({parse_audio_input_arg(audio_input)});
+        for(AudioInput &request_audio_input : requested_audio_inputs.back().audio_inputs) {
+            bool match = false;
             for(const auto &existing_audio_input : audio_inputs) {
-                fprintf(stderr, "    %s\n", existing_audio_input.name.c_str());
+                if(strcmp(request_audio_input.name.c_str(), existing_audio_input.name.c_str()) == 0) {
+                    if(request_audio_input.description.empty())
+                        request_audio_input.description = "gsr-" + existing_audio_input.description;
+
+                    match = true;
+                    break;
+                }
             }
-            exit(2);
+
+            if(!match) {
+                fprintf(stderr, "Error: Audio input device '%s' is not a valid audio device, expected one of:\n", request_audio_input.name.c_str());
+                for(const auto &existing_audio_input : audio_inputs) {
+                    fprintf(stderr, "    %s\n", existing_audio_input.name.c_str());
+                }
+                exit(2);
+            }
         }
     }
 
@@ -1148,7 +1283,9 @@ int main(int argc, char **argv) {
     // If not audio is provided then create one silent audio track.
     if(is_livestream && requested_audio_inputs.empty()) {
         fprintf(stderr, "Info: live streaming but no audio track was added. Adding a silent audio track\n");
-        requested_audio_inputs.push_back({ "", "gsr-silent" });
+        MergedAudioInputs mai;
+        mai.audio_inputs.push_back({ "", "gsr-silent" });
+        requested_audio_inputs.push_back(std::move(mai));
     }
 
     AVStream *video_stream = nullptr;
@@ -1168,7 +1305,7 @@ int main(int argc, char **argv) {
         avcodec_parameters_from_context(video_stream->codecpar, video_codec_context);
 
     int audio_stream_index = VIDEO_STREAM_INDEX + 1;
-    for(const AudioInput &audio_input : requested_audio_inputs) {
+    for(const MergedAudioInputs &merged_audio_inputs : requested_audio_inputs) {
         AVCodecContext *audio_codec_context = create_audio_codec_context(fps);
 
         AVStream *audio_stream = nullptr;
@@ -1179,7 +1316,53 @@ int main(int argc, char **argv) {
         if(audio_stream)
             avcodec_parameters_from_context(audio_stream->codecpar, audio_codec_context);
 
-        audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, {}, {}, audio_stream_index, audio_input });
+        #if LIBAVCODEC_VERSION_MAJOR < 60
+        const int num_channels = audio_codec_context->channels;
+        #else
+        const int num_channels = audio_codec_context->ch_layout.nb_channels;
+        #endif
+
+        //audio_frame->sample_rate = audio_codec_context->sample_rate;
+
+        std::vector<AVFilterContext*> src_filter_ctx;
+        AVFilterGraph *graph = nullptr;
+        AVFilterContext *sink = nullptr;
+        bool use_amix = merged_audio_inputs.audio_inputs.size() > 1;
+        if(use_amix) {
+            int err = init_filter_graph(audio_codec_context, &graph, &sink, src_filter_ctx, merged_audio_inputs.audio_inputs.size());
+            if(err < 0) {
+                fprintf(stderr, "Error: failed to create audio filter\n");
+                exit(1);
+            }
+        }
+
+        // TODO: Cleanup above
+
+        std::vector<AudioDevice> audio_devices;
+        for(size_t i = 0; i < merged_audio_inputs.audio_inputs.size(); ++i) {
+            auto &audio_input = merged_audio_inputs.audio_inputs[i];
+            AVFilterContext *src_ctx = nullptr;
+            if(use_amix)
+                src_ctx = src_filter_ctx[i];
+
+            AudioDevice audio_device;
+            audio_device.audio_input = audio_input;
+            audio_device.src_filter_ctx = src_ctx;
+
+            if(audio_input.name.empty()) {
+                audio_device.sound_device.handle = NULL;
+                audio_device.sound_device.frames = 0;
+            } else {
+                if(sound_device_get_by_name(&audio_device.sound_device, audio_input.name.c_str(), audio_input.description.c_str(), num_channels, audio_codec_context->frame_size) != 0) {
+                    fprintf(stderr, "Error: failed to get \"%s\" sound device\n", audio_input.name.c_str());
+                    exit(1);
+                }
+            }
+
+            audio_devices.push_back(std::move(audio_device));
+        }
+
+        audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, std::move(audio_devices), graph, sink, audio_stream_index });
         ++audio_stream_index;
     }
 
@@ -1218,6 +1401,7 @@ int main(int argc, char **argv) {
     frame->color_range = AVCOL_RANGE_JPEG;
 
     std::mutex write_output_mutex;
+    std::mutex audio_filter_mutex;
 
     const double record_start_time = clock_get_monotonic_seconds();
     std::deque<AVPacket> frame_data_queue;
@@ -1232,114 +1416,115 @@ int main(int argc, char **argv) {
     memset(empty_audio, 0, audio_buffer_size);
 
     for(AudioTrack &audio_track : audio_tracks) {
-        audio_track.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, &audio_track, empty_audio](AVFormatContext *av_format_context, std::mutex *write_output_mutex) mutable {
-            #if LIBAVCODEC_VERSION_MAJOR < 60
-            const int num_channels = audio_track.codec_context->channels;
-            #else
-            const int num_channels = audio_track.codec_context->ch_layout.nb_channels;
-            #endif
-
-            if(audio_track.audio_input.name.empty()) {
-                audio_track.sound_device.handle = NULL;
-                audio_track.sound_device.frames = 0;
-            } else {
-                if(sound_device_get_by_name(&audio_track.sound_device, audio_track.audio_input.name.c_str(), audio_track.audio_input.description.c_str(), num_channels, audio_track.codec_context->frame_size) != 0) {
-                    fprintf(stderr, "failed to get 'pulse' sound device\n");
+        for(AudioDevice &audio_device : audio_track.audio_devices) {
+            audio_device.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, &audio_track, empty_audio, &audio_device, &audio_filter_mutex, &write_output_mutex](AVFormatContext *av_format_context) mutable {
+                SwrContext *swr = swr_alloc();
+                if(!swr) {
+                    fprintf(stderr, "Failed to create SwrContext\n");
                     exit(1);
                 }
-            }
+                av_opt_set_int(swr, "in_channel_layout", AV_CH_LAYOUT_STEREO, 0);
+                av_opt_set_int(swr, "out_channel_layout", AV_CH_LAYOUT_STEREO, 0);
+                av_opt_set_int(swr, "in_sample_rate", audio_track.codec_context->sample_rate, 0);
+                av_opt_set_int(swr, "out_sample_rate", audio_track.codec_context->sample_rate, 0);
+                av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_S16, 0);
+                av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
+                swr_init(swr);
 
-            SwrContext *swr = swr_alloc();
-            if(!swr) {
-                fprintf(stderr, "Failed to create SwrContext\n");
-                exit(1);
-            }
-            av_opt_set_int(swr, "in_channel_layout", AV_CH_LAYOUT_STEREO, 0);
-            av_opt_set_int(swr, "out_channel_layout", AV_CH_LAYOUT_STEREO, 0);
-            av_opt_set_int(swr, "in_sample_rate", audio_track.codec_context->sample_rate, 0);
-            av_opt_set_int(swr, "out_sample_rate", audio_track.codec_context->sample_rate, 0);
-            av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_S16, 0);
-            av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
-            swr_init(swr);
+                const double target_audio_hz = 1.0 / (double)audio_track.codec_context->sample_rate;
+                double received_audio_time = clock_get_monotonic_seconds();
+                const int64_t timeout_ms = std::round((1000.0 / (double)audio_track.codec_context->sample_rate) * 1000.0);
 
-            int64_t pts = 0;
-            const double target_audio_hz = 1.0 / (double)audio_track.codec_context->sample_rate;
-            double received_audio_time = clock_get_monotonic_seconds();
-            const int64_t timeout_ms = std::round((1000.0 / (double)audio_track.codec_context->sample_rate) * 1000.0);
+                while(running) {
+                    void *sound_buffer;
+                    int sound_buffer_size = -1;
+                    if(audio_device.sound_device.handle)
+                        sound_buffer_size = sound_device_read_next_chunk(&audio_device.sound_device, &sound_buffer);
+                    const bool got_audio_data = sound_buffer_size >= 0;
 
-            while(running) {
-                void *sound_buffer;
-                int sound_buffer_size = -1;
-                if(audio_track.sound_device.handle)
-                    sound_buffer_size = sound_device_read_next_chunk(&audio_track.sound_device, &sound_buffer);
-                const bool got_audio_data = sound_buffer_size >= 0;
+                    const double this_audio_frame_time = clock_get_monotonic_seconds();
+                    if(got_audio_data)
+                        received_audio_time = this_audio_frame_time;
 
-                const double this_audio_frame_time = clock_get_monotonic_seconds();
-                if(got_audio_data)
-                    received_audio_time = this_audio_frame_time;
+                    int ret = av_frame_make_writable(audio_track.frame);
+                    if (ret < 0) {
+                        fprintf(stderr, "Failed to make audio frame writable\n");
+                        break;
+                    }
 
-                int ret = av_frame_make_writable(audio_track.frame);
-                if (ret < 0) {
-                    fprintf(stderr, "Failed to make audio frame writable\n");
-                    break;
-                }
+                    int64_t num_missing_frames = std::round((this_audio_frame_time - received_audio_time) / target_audio_hz / (int64_t)audio_track.frame->nb_samples);
+                    if(got_audio_data)
+                        num_missing_frames = std::max((int64_t)0, num_missing_frames - 1);
 
-                int64_t num_missing_frames = std::round((this_audio_frame_time - received_audio_time) / target_audio_hz / (int64_t)audio_track.frame->nb_samples);
-                if(got_audio_data)
-                    num_missing_frames = std::max((int64_t)0, num_missing_frames - 1);
+                    if(!audio_device.sound_device.handle)
+                        num_missing_frames = std::max((int64_t)1, num_missing_frames);
 
-                if(!audio_track.sound_device.handle)
-                    num_missing_frames = std::max((int64_t)1, num_missing_frames);
+                    // Jesus is there a better way to do this? I JUST WANT TO KEEP VIDEO AND AUDIO SYNCED HOLY FUCK I WANT TO KILL MYSELF NOW.
+                    // THIS PIECE OF SHIT WANTS EMPTY FRAMES OTHERWISE VIDEO PLAYS TOO FAST TO KEEP UP WITH AUDIO OR THE AUDIO PLAYS TOO EARLY.
+                    // BUT WE CANT USE DELAYS TO GIVE DUMMY DATA BECAUSE PULSEAUDIO MIGHT GIVE AUDIO A BIG DELAYED!!!
+                    if(num_missing_frames >= 5 || !audio_device.sound_device.handle) {
+                        // TODO:
+                        //audio_track.frame->data[0] = empty_audio;
+                        received_audio_time = this_audio_frame_time;
+                        swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.codec_context->frame_size);
+                        // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
+                        std::lock_guard<std::mutex> lock(audio_filter_mutex);
+                        for(int i = 0; i < num_missing_frames; ++i) {
+                            if(audio_track.graph) {
+                                // TODO: av_buffersrc_add_frame
+                                if(av_buffersrc_write_frame(audio_device.src_filter_ctx, audio_track.frame) < 0) {
+                                    fprintf(stderr, "Error: failed to add audio frame to filter\n");
+                                }
+                            } else {
+                                audio_track.frame->pts = audio_track.pts;
+                                audio_track.pts += audio_track.frame->nb_samples;
+                                ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
+                                if(ret >= 0){
+                                    receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
+                                } else {
+                                    fprintf(stderr, "Failed to encode audio!\n");
+                                }
+                            }
+                        }
+                    }
 
-                // Jesus is there a better way to do this? I JUST WANT TO KEEP VIDEO AND AUDIO SYNCED HOLY FUCK I WANT TO KILL MYSELF NOW.
-                // THIS PIECE OF SHIT WANTS EMPTY FRAMES OTHERWISE VIDEO PLAYS TOO FAST TO KEEP UP WITH AUDIO OR THE AUDIO PLAYS TOO EARLY.
-                // BUT WE CANT USE DELAYS TO GIVE DUMMY DATA BECAUSE PULSEAUDIO MIGHT GIVE AUDIO A BIG DELAYED!!!
-                if(num_missing_frames >= 5 || !audio_track.sound_device.handle) {
-                    // TODO:
-                    //audio_track.frame->data[0] = empty_audio;
-                    received_audio_time = this_audio_frame_time;
-                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.codec_context->frame_size);
-                    // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
-                    for(int i = 0; i < num_missing_frames; ++i) {
-                        audio_track.frame->pts = pts;
-                        pts += audio_track.frame->nb_samples;
-                        ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
-                        if(ret >= 0){
-                            receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
+                    if(!audio_device.sound_device.handle)
+                        usleep(timeout_ms * 1000);
+
+                    if(got_audio_data) {
+                        // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
+                        swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.codec_context->frame_size);
+
+                        if(audio_track.graph) {
+                            std::lock_guard<std::mutex> lock(audio_filter_mutex);
+                            // TODO: av_buffersrc_add_frame
+                            if(av_buffersrc_write_frame(audio_device.src_filter_ctx, audio_track.frame) < 0) {
+                                fprintf(stderr, "Error: failed to add audio frame to filter\n");
+                            }
                         } else {
-                            fprintf(stderr, "Failed to encode audio!\n");
+                            audio_track.frame->pts = audio_track.pts;
+                            audio_track.pts += audio_track.frame->nb_samples;
+                            ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
+                            if(ret >= 0){
+                                receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
+                            } else {
+                                fprintf(stderr, "Failed to encode audio!\n");
+                            }
                         }
                     }
                 }
 
-                if(!audio_track.sound_device.handle)
-                    usleep(timeout_ms * 1000);
-
-                if(got_audio_data) {
-                    // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
-                    swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.codec_context->frame_size);
-
-                    audio_track.frame->pts = pts;
-                    pts += audio_track.frame->nb_samples;
-
-                    ret = avcodec_send_frame(audio_track.codec_context, audio_track.frame);
-                    if(ret >= 0){
-                        receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, audio_track.frame, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, *write_output_mutex);
-                    } else {
-                        fprintf(stderr, "Failed to encode audio!\n");
-                    }
-                }
-            }
-
-            sound_device_close(&audio_track.sound_device);
-            swr_free(&swr);
-        }, av_format_context, &write_output_mutex);
+                swr_free(&swr);
+            }, av_format_context);
+        }
     }
 
     // Set update_fps to 24 to test if duplicate/delayed frames cause video/audio desync or too fast/slow video.
     const double update_fps = fps + 190;
     int64_t video_pts_counter = 0;
     bool should_stop_error = false;
+
+    AVFrame *aframe = av_frame_alloc();
 
     while (running) {
         double frame_start = clock_get_monotonic_seconds();
@@ -1351,6 +1536,27 @@ int main(int argc, char **argv) {
             break;
         }
         ++fps_counter;
+
+        {
+            std::lock_guard<std::mutex> lock(audio_filter_mutex);
+            for(AudioTrack &audio_track : audio_tracks) {
+                if(!audio_track.sink)
+                    continue;
+
+                int err = 0;
+                while ((err = av_buffersink_get_frame(audio_track.sink, aframe)) >= 0) {
+                    aframe->pts = audio_track.pts;
+                    audio_track.pts += audio_track.codec_context->frame_size;
+                    err = avcodec_send_frame(audio_track.codec_context, aframe);
+                    if(err >= 0){
+                        receive_frames(audio_track.codec_context, audio_track.stream_index, audio_track.stream, aframe, av_format_context, record_start_time, frame_data_queue, replay_buffer_size_secs, frames_erased, write_output_mutex);
+                    } else {
+                        fprintf(stderr, "Failed to encode audio!\n");
+                    }
+                    av_frame_unref(aframe);
+                }
+            }
+        }
 
         double time_now = clock_get_monotonic_seconds();
         double frame_timer_elapsed = time_now - frame_timer_start;
@@ -1409,6 +1615,7 @@ int main(int argc, char **argv) {
     }
 
 	running = 0;
+    av_frame_free(&aframe);
 
     if(save_replay_thread.valid()) {
         save_replay_thread.get();
@@ -1416,7 +1623,10 @@ int main(int argc, char **argv) {
     }
 
     for(AudioTrack &audio_track : audio_tracks) {
-        audio_track.thread.join();
+        for(AudioDevice &audio_device : audio_track.audio_devices) {
+            audio_device.thread.join();
+            sound_device_close(&audio_device.sound_device);
+        }
     }
 
     if (replay_buffer_size_secs == -1 && av_write_trailer(av_format_context) != 0) {
