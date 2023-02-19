@@ -17,6 +17,7 @@ typedef struct {
     bool stop_is_error;
     bool window_resized;
     bool created_hw_frame;
+    bool follow_focused_initialized;
     double window_resize_timer;
 
     vec2i window_size;
@@ -316,9 +317,10 @@ static void gsr_capture_xcomposite_cuda_tick(gsr_capture *cap, AVCodecContext *v
         }
     }
 
-    if(cap_xcomp->params.follow_focused && XCheckTypedWindowEvent(cap_xcomp->dpy, DefaultRootWindow(cap_xcomp->dpy), PropertyNotify, &cap_xcomp->xev) && cap_xcomp->xev.xproperty.atom == cap_xcomp->net_active_window_atom) {
+    if(cap_xcomp->params.follow_focused && (!cap_xcomp->follow_focused_initialized || (XCheckTypedWindowEvent(cap_xcomp->dpy, DefaultRootWindow(cap_xcomp->dpy), PropertyNotify, &cap_xcomp->xev) && cap_xcomp->xev.xproperty.atom == cap_xcomp->net_active_window_atom))) {
         Window focused_window = get_focused_window(cap_xcomp->dpy, cap_xcomp->net_active_window_atom);
-        if(focused_window != cap_xcomp->window) {
+        if(focused_window != cap_xcomp->window || !cap_xcomp->follow_focused_initialized) {
+            cap_xcomp->follow_focused_initialized = true;
             XSelectInput(cap_xcomp->dpy, cap_xcomp->window, 0);
             cap_xcomp->window = focused_window;
             XSelectInput(cap_xcomp->dpy, cap_xcomp->window, StructureNotifyMask | ExposureMask);
@@ -327,7 +329,7 @@ static void gsr_capture_xcomposite_cuda_tick(gsr_capture *cap, AVCodecContext *v
             attr.width = 0;
             attr.height = 0;
             if(!XGetWindowAttributes(cap_xcomp->dpy, cap_xcomp->window, &attr))
-                fprintf(stderr, "gsr error: gsr_capture_xcomposite_cuda_start failed: invalid window id: %lu\n", cap_xcomp->window);
+                fprintf(stderr, "gsr error: gsr_capture_xcomposite_cuda_tick failed: invalid window id: %lu\n", cap_xcomp->window);
 
             cap_xcomp->window_size.x = max_int(attr.width, 0);
             cap_xcomp->window_size.y = max_int(attr.height, 0);
@@ -335,6 +337,17 @@ static void gsr_capture_xcomposite_cuda_tick(gsr_capture *cap, AVCodecContext *v
 
             window_texture_deinit(&cap_xcomp->window_texture);
             window_texture_init(&cap_xcomp->window_texture, cap_xcomp->dpy, cap_xcomp->window, &cap_xcomp->egl); // TODO: Do not do the below window_texture_on_resize after this
+            
+            cap_xcomp->texture_size.x = 0;
+            cap_xcomp->texture_size.y = 0;
+
+            cap_xcomp->egl.glBindTexture(GL_TEXTURE_2D, window_texture_get_opengl_texture_id(&cap_xcomp->window_texture));
+            cap_xcomp->egl.glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &cap_xcomp->texture_size.x);
+            cap_xcomp->egl.glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &cap_xcomp->texture_size.y);
+            cap_xcomp->egl.glBindTexture(GL_TEXTURE_2D, 0);
+
+            cap_xcomp->texture_size.x = min_int(video_codec_context->width, max_int(2, cap_xcomp->texture_size.x & ~1));
+            cap_xcomp->texture_size.y = min_int(video_codec_context->height, max_int(2, cap_xcomp->texture_size.y & ~1));
         }
     }
 
@@ -343,9 +356,9 @@ static void gsr_capture_xcomposite_cuda_tick(gsr_capture *cap, AVCodecContext *v
         cap_xcomp->window_resized = false;
         if(window_texture_on_resize(&cap_xcomp->window_texture) != 0) {
             fprintf(stderr, "gsr error: gsr_capture_xcomposite_cuda_tick: window_texture_on_resize failed\n");
-            cap_xcomp->should_stop = true;
-            cap_xcomp->stop_is_error = true;
-            return;
+            //cap_xcomp->should_stop = true;
+            //cap_xcomp->stop_is_error = true;
+            //return;
         }
 
         cap_xcomp->texture_size.x = 0;
