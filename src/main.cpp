@@ -1362,7 +1362,16 @@ int main(int argc, char **argv) {
             audio_devices.push_back(std::move(audio_device));
         }
 
-        audio_tracks.push_back({ audio_codec_context, audio_frame, audio_stream, std::move(audio_devices), graph, sink, audio_stream_index });
+        AudioTrack audio_track;
+        audio_track.codec_context = audio_codec_context;
+        audio_track.frame = audio_frame;
+        audio_track.stream = audio_stream;
+        audio_track.audio_devices = std::move(audio_devices);
+        audio_track.graph = graph;
+        audio_track.sink = sink;
+        audio_track.pts = 0;
+        audio_track.stream_index = audio_stream_index;
+        audio_tracks.push_back(std::move(audio_track));
         ++audio_stream_index;
     }
 
