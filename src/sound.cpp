@@ -231,6 +231,7 @@ static pa_sample_format_t audio_format_to_pulse_audio_format(AudioFormat audio_f
     switch(audio_format) {
         case S16: return PA_SAMPLE_S16LE;
         case S32: return PA_SAMPLE_S32LE;
+        case F32: return PA_SAMPLE_FLOAT32LE;
     }
     assert(false);
     return PA_SAMPLE_S16LE;
@@ -240,6 +241,7 @@ static int audio_format_to_get_bytes_per_sample(AudioFormat audio_format) {
     switch(audio_format) {
         case S16: return 2;
         case S32: return 4;
+        case F32: return 4;
     }
     assert(false);
     return 2;

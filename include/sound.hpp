@@ -37,7 +37,8 @@ struct MergedAudioInputs {
 
 typedef enum {
     S16,
-    S32
+    S32,
+    F32
 } AudioFormat;
 
 /*

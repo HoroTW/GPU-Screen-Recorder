@@ -235,11 +235,37 @@ static AVCodecID audio_codec_get_id(AudioCodec audio_codec) {
     return AV_CODEC_ID_AAC;
 }
 
-static AVSampleFormat audio_codec_get_sample_format(AudioCodec audio_codec) {
+static AVSampleFormat audio_codec_get_sample_format(AudioCodec audio_codec, const AVCodec *codec) {
     switch(audio_codec) {
-        case AudioCodec::AAC:  return AV_SAMPLE_FMT_FLTP;
-        case AudioCodec::OPUS: return AV_SAMPLE_FMT_S16;
-        case AudioCodec::FLAC: return AV_SAMPLE_FMT_S32;
+        case AudioCodec::AAC: {
+            return AV_SAMPLE_FMT_FLTP;
+        }
+        case AudioCodec::OPUS: {
+            bool supports_s16 = false;
+            bool supports_flt = false;
+
+            for(size_t i = 0; codec->sample_fmts && codec->sample_fmts[i] != -1; ++i) {
+                if(codec->sample_fmts[i] == AV_SAMPLE_FMT_S16) {
+                    supports_s16 = true;
+                } else if(codec->sample_fmts[i] == AV_SAMPLE_FMT_FLT) {
+                    supports_flt = true;
+                }
+            }
+
+            if(!supports_s16 && !supports_flt) {
+                fprintf(stderr, "Warning: opus audio codec is chosen but your ffmpeg version does not support s16/flt sample format and performance might be slightly worse. You can either rebuild ffmpeg with libopus instead of the built-in opus, use the flatpak version of gpu screen recorder or record with flac audio codec instead (-ac flac). Falling back to fltp audio sample format instead.\n");
+            }
+
+            if(supports_s16)
+                return AV_SAMPLE_FMT_S16;
+            else if(supports_flt)
+                return AV_SAMPLE_FMT_FLT;
+            else
+                return AV_SAMPLE_FMT_FLTP;
+        }
+        case AudioCodec::FLAC: {
+            return AV_SAMPLE_FMT_S32;
+        }
     }
     assert(false);
     return AV_SAMPLE_FMT_FLTP;
@@ -255,20 +281,21 @@ static int64_t audio_codec_get_get_bitrate(AudioCodec audio_codec) {
     return 96000;
 }
 
-static AudioFormat audio_codec_get_audio_format(AudioCodec audio_codec) {
-    switch(audio_codec) {
-        case AudioCodec::AAC:  return S32;
-        case AudioCodec::OPUS: return S16;
-        case AudioCodec::FLAC: return S32;
+static AudioFormat audio_codec_context_get_audio_format(const AVCodecContext *audio_codec_context) {
+    switch(audio_codec_context->sample_fmt) {
+        case AV_SAMPLE_FMT_FLT:   return F32;
+        case AV_SAMPLE_FMT_FLTP:  return S32;
+        case AV_SAMPLE_FMT_S16:   return S16;
+        case AV_SAMPLE_FMT_S32:   return S32;
+        default:                  return S16;
     }
-    assert(false);
-    return S32;
 }
 
 static AVSampleFormat audio_format_to_sample_format(const AudioFormat audio_format) {
     switch(audio_format) {
         case S16:   return AV_SAMPLE_FMT_S16;
         case S32:   return AV_SAMPLE_FMT_S32;
+        case F32:   return AV_SAMPLE_FMT_FLT;
     }
     assert(false);
     return AV_SAMPLE_FMT_S16;
@@ -281,16 +308,11 @@ static AVCodecContext* create_audio_codec_context(int fps, AudioCodec audio_code
         exit(1);
     }
 
-    fprintf(stderr, "Audio codec: %s, supported sample formats:\n", audio_codec_get_name(audio_codec));
-    for(size_t i = 0; codec->sample_fmts && codec->sample_fmts[i] != -1; ++i) {
-        fprintf(stderr, "  %zu: %s\n", i, av_get_sample_fmt_name(codec->sample_fmts[i]));
-    }
-
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
 
     assert(codec->type == AVMEDIA_TYPE_AUDIO);
 	codec_context->codec_id = codec->id;
-    codec_context->sample_fmt = audio_codec_get_sample_format(audio_codec);
+    codec_context->sample_fmt = audio_codec_get_sample_format(audio_codec, codec);
     codec_context->bit_rate = audio_codec_get_get_bitrate(audio_codec);
     codec_context->sample_rate = 48000;
     if(audio_codec == AudioCodec::AAC)
@@ -1055,8 +1077,6 @@ int main(int argc, char **argv) {
         usage();
     }
 
-    const AudioFormat audio_format = audio_codec_get_audio_format(audio_codec);
-
     const Arg &audio_input_arg = args["-a"];
     const std::vector<AudioInput> audio_inputs = get_pulseaudio_inputs();
     std::vector<MergedAudioInputs> requested_audio_inputs;
@@ -1482,7 +1502,7 @@ int main(int argc, char **argv) {
                 audio_device.sound_device.handle = NULL;
                 audio_device.sound_device.frames = 0;
             } else {
-                if(sound_device_get_by_name(&audio_device.sound_device, audio_input.name.c_str(), audio_input.description.c_str(), num_channels, audio_codec_context->frame_size, audio_format) != 0) {
+                if(sound_device_get_by_name(&audio_device.sound_device, audio_input.name.c_str(), audio_input.description.c_str(), num_channels, audio_codec_context->frame_size, audio_codec_context_get_audio_format(audio_codec_context)) != 0) {
                     fprintf(stderr, "Error: failed to get \"%s\" sound device\n", audio_input.name.c_str());
                     exit(1);
                 }
@@ -1560,8 +1580,8 @@ int main(int argc, char **argv) {
 
     for(AudioTrack &audio_track : audio_tracks) {
         for(AudioDevice &audio_device : audio_track.audio_devices) {
-            audio_device.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, &audio_track, empty_audio, &audio_device, &audio_filter_mutex, &write_output_mutex, audio_format](AVFormatContext *av_format_context) mutable {
-                const AVSampleFormat sound_device_sample_format = audio_format_to_sample_format(audio_format);
+            audio_device.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, &audio_track, empty_audio, &audio_device, &audio_filter_mutex, &write_output_mutex](AVFormatContext *av_format_context) mutable {
+                const AVSampleFormat sound_device_sample_format = audio_format_to_sample_format(audio_codec_context_get_audio_format(audio_track.codec_context));
                 const bool needs_audio_conversion = audio_track.codec_context->sample_fmt != sound_device_sample_format;
                 SwrContext *swr = nullptr;
                 if(needs_audio_conversion) {
