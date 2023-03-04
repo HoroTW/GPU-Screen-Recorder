@@ -205,6 +205,7 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap, AVCodecContext *video_codec
     if(direct_capture && get_driver_version(&driver_major_version, &driver_minor_version)) {
         fprintf(stderr, "Info: detected nvidia version: %d.%d\n", driver_major_version, driver_minor_version);
 
+        // TODO:
         if(version_at_least(driver_major_version, driver_minor_version, 515, 57) && version_less_than(driver_major_version, driver_minor_version, 520, 56)) {
             direct_capture = false;
             fprintf(stderr, "Warning: \"screen-direct\" has temporary been disabled as it causes stuttering with driver versions >= 515.57 and < 520.56. Please update your driver if possible. Capturing \"screen\" instead.\n");
@@ -292,8 +293,8 @@ static int gsr_capture_nvfbc_start(gsr_capture *cap, AVCodecContext *video_codec
         create_capture_params.captureBox = (NVFBC_BOX){ x, y, width, height };
     create_capture_params.eTrackingType = tracking_type;
     create_capture_params.dwSamplingRateMs = 1000u / ((uint32_t)cap_nvfbc->params.fps + 1);
-    create_capture_params.bAllowDirectCapture = cap_nvfbc->params.direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
-    create_capture_params.bPushModel = cap_nvfbc->params.direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
+    create_capture_params.bAllowDirectCapture = direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
+    create_capture_params.bPushModel = direct_capture ? NVFBC_TRUE : NVFBC_FALSE;
     if(tracking_type == NVFBC_TRACKING_OUTPUT)
         create_capture_params.dwOutputId = output_id;
 

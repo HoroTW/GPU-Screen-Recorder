@@ -494,8 +494,8 @@ static void open_video(AVCodecContext *codec_context, VideoQuality video_quality
 static void usage() {
     fprintf(stderr, "usage: gpu-screen-recorder -w <window_id|monitor|focused> [-c <container_format>] [-s WxH] -f <fps> [-a <audio_input>...] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
     fprintf(stderr, "OPTIONS:\n");
-    fprintf(stderr, "  -w    Window to record, a display, \"screen\", \"screen-direct\" or \"focused\". The display is the display (monitor) name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded. If this is \"focused\" then the currently focused window is recorded. When recording the focused window then the -s option has to be used as well.\n"
-        "\"screen-direct\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode.\n");
+    fprintf(stderr, "  -w    Window to record, a display, \"screen\", \"screen-direct\", \"screen-direct-force\" or \"focused\". The display is the display (monitor) name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded. If this is \"focused\" then the currently focused window is recorded. When recording the focused window then the -s option has to be used as well.\n"
+        "\"screen-direct\"/\"screen-direct-force\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Direct mode doesn't capture cursor either.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv. Only required if no output file is specified or if recording in replay buffer mode. If an output file is specified and -c is not used then the container format is determined from the output filename extension.\n");
     fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. This option is only supported (and required) when -w is \"focused\".\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
@@ -509,6 +509,8 @@ static void usage() {
     fprintf(stderr, "NOTES:\n");
     fprintf(stderr, "  Send signal SIGINT (Ctrl+C) to gpu-screen-recorder to stop and save the recording (when not using replay mode).\n");
     fprintf(stderr, "  Send signal SIGUSR1 (killall -SIGUSR1 gpu-screen-recorder) to gpu-screen-recorder to save a replay.\n");
+    fprintf(stderr, "EXAMPLES\n");
+    fprintf(stderr, "  gpu-screen-recorder -w screen -f 60 -a \"$(pactl get-default-sink).monitor\" -o video.mp4\n");
     exit(1);
 }
 
@@ -1115,6 +1117,18 @@ int main(int argc, char **argv) {
             return 2;
         }
 
+        if(strcmp(window_str, "screen") != 0 && strcmp(window_str, "screen-direct") != 0 && strcmp(window_str, "screen-direct-force") != 0) {
+            gsr_monitor gmon;
+            if(!get_monitor_by_name(dpy, window_str, &gmon)) {
+                fprintf(stderr, "gsr error: display \"%s\" not found, expected one of:\n", window_str);
+                fprintf(stderr, "    \"screen\"    (%dx%d+%d+%d)\n", XWidthOfScreen(DefaultScreenOfDisplay(dpy)), XHeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
+                fprintf(stderr, "    \"screen-direct\"    (%dx%d+%d+%d)\n", XWidthOfScreen(DefaultScreenOfDisplay(dpy)), XHeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
+                fprintf(stderr, "    \"screen-direct-force\"    (%dx%d+%d+%d)\n", XWidthOfScreen(DefaultScreenOfDisplay(dpy)), XHeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
+                for_each_active_monitor_output(dpy, monitor_output_callback_print, NULL);
+                return 1;
+            }
+        }
+
         const char *capture_target = window_str;
         bool direct_capture = strcmp(window_str, "screen-direct") == 0;
         if(direct_capture) {
@@ -1122,6 +1136,11 @@ int main(int argc, char **argv) {
             // TODO: Temporary disable direct capture because push model causes stuttering when it's direct capturing. This might be a nvfbc bug. This does not happen when using a compositor.
             direct_capture = false;
             fprintf(stderr, "Warning: screen-direct has temporary been disabled as it causes stuttering. This is likely a NvFBC bug. Falling back to \"screen\".\n");
+        }
+
+        if(strcmp(window_str, "screen-direct-force") == 0) {
+            direct_capture = true;
+            capture_target = "screen";
         }
 
         gsr_capture_nvfbc_params nvfbc_params;
@@ -1134,17 +1153,6 @@ int main(int argc, char **argv) {
         capture = gsr_capture_nvfbc_create(&nvfbc_params);
         if(!capture)
             return 1;
-
-        if(strcmp(capture_target, "screen") != 0) {
-            gsr_monitor gmon;
-            if(!get_monitor_by_name(dpy, capture_target, &gmon)) {
-                fprintf(stderr, "gsr error: display \"%s\" not found, expected one of:\n", capture_target);
-                fprintf(stderr, "    \"screen\"    (%dx%d+%d+%d)\n", XWidthOfScreen(DefaultScreenOfDisplay(dpy)), XHeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
-                fprintf(stderr, "    \"screen-direct\"    (%dx%d+%d+%d)\n", XWidthOfScreen(DefaultScreenOfDisplay(dpy)), XHeightOfScreen(DefaultScreenOfDisplay(dpy)), 0, 0);
-                for_each_active_monitor_output(dpy, monitor_output_callback_print, NULL);
-                return 1;
-            }
-        }
     } else {
         errno = 0;
         Window src_window_id = strtol(window_str, nullptr, 0);
