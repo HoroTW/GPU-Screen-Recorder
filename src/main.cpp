@@ -140,6 +140,12 @@ enum class VideoCodec {
     H265
 };
 
+enum class AudioCodec {
+    AAC,
+    OPUS,
+    FLAC
+};
+
 static int x11_error_handler(Display *dpy, XErrorEvent *ev) {
     return 0;
 }
@@ -209,23 +215,81 @@ static void receive_frames(AVCodecContext *av_codec_context, int stream_index, A
     }
 }
 
-static AVCodecContext* create_audio_codec_context(int fps) {
-    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+static const char* audio_codec_get_name(AudioCodec audio_codec) {
+    switch(audio_codec) {
+        case AudioCodec::AAC:  return "aac";
+        case AudioCodec::OPUS: return "opus";
+        case AudioCodec::FLAC: return "flac";
+    }
+    assert(false);
+    return "";
+}
+
+static AVCodecID audio_codec_get_id(AudioCodec audio_codec) {
+    switch(audio_codec) {
+        case AudioCodec::AAC:  return AV_CODEC_ID_AAC;
+        case AudioCodec::OPUS: return AV_CODEC_ID_OPUS;
+        case AudioCodec::FLAC: return AV_CODEC_ID_FLAC;
+    }
+    assert(false);
+    return AV_CODEC_ID_AAC;
+}
+
+static AVSampleFormat audio_codec_get_sample_format(AudioCodec audio_codec) {
+    switch(audio_codec) {
+        case AudioCodec::AAC:  return AV_SAMPLE_FMT_FLTP;
+        case AudioCodec::OPUS: return AV_SAMPLE_FMT_S16;
+        case AudioCodec::FLAC: return AV_SAMPLE_FMT_S32;
+    }
+    assert(false);
+    return AV_SAMPLE_FMT_FLTP;
+}
+
+static int64_t audio_codec_get_get_bitrate(AudioCodec audio_codec) {
+    switch(audio_codec) {
+        case AudioCodec::AAC:  return 128000;
+        case AudioCodec::OPUS: return 96000;
+        case AudioCodec::FLAC: return 96000;
+    }
+    assert(false);
+    return 96000;
+}
+
+static AudioFormat audio_codec_get_audio_format(AudioCodec audio_codec) {
+    switch(audio_codec) {
+        case AudioCodec::AAC:  return S32;
+        case AudioCodec::OPUS: return S16;
+        case AudioCodec::FLAC: return S32;
+    }
+    assert(false);
+    return S32;
+}
+
+static AVSampleFormat audio_format_to_sample_format(const AudioFormat audio_format) {
+    switch(audio_format) {
+        case S16:   return AV_SAMPLE_FMT_S16;
+        case S32:   return AV_SAMPLE_FMT_S32;
+    }
+    assert(false);
+    return AV_SAMPLE_FMT_S16;
+}
+
+static AVCodecContext* create_audio_codec_context(int fps, AudioCodec audio_codec) {
+    const AVCodec *codec = avcodec_find_encoder(audio_codec_get_id(audio_codec));
     if (!codec) {
-        fprintf(
-            stderr,
-            "Error: Could not find aac encoder\n");
+        fprintf(stderr, "Error: Could not find %s audio encoder\n", audio_codec_get_name(audio_codec));
         exit(1);
     }
 
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
 
     assert(codec->type == AVMEDIA_TYPE_AUDIO);
-	codec_context->codec_id = AV_CODEC_ID_AAC;
-    codec_context->sample_fmt = AV_SAMPLE_FMT_FLTP;
-    //codec_context->bit_rate = 64000;
+	codec_context->codec_id = codec->id;
+    codec_context->sample_fmt = audio_codec_get_sample_format(audio_codec);
+    codec_context->bit_rate = audio_codec_get_get_bitrate(audio_codec);
     codec_context->sample_rate = 48000;
-    codec_context->profile = FF_PROFILE_AAC_LOW;
+    if(audio_codec == AudioCodec::AAC)
+        codec_context->profile = FF_PROFILE_AAC_LOW;
 #if LIBAVCODEC_VERSION_MAJOR < 60
     codec_context->channel_layout = AV_CH_LAYOUT_STEREO;
     codec_context->channels = 2;
@@ -492,7 +556,7 @@ static void open_video(AVCodecContext *codec_context, VideoQuality video_quality
 }
 
 static void usage() {
-    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id|monitor|focused> [-c <container_format>] [-s WxH] -f <fps> [-a <audio_input>...] [-q <quality>] [-r <replay_buffer_size_sec>] [-o <output_file>]\n");
+    fprintf(stderr, "usage: gpu-screen-recorder -w <window_id|monitor|focused> [-c <container_format>] [-s WxH] -f <fps> [-a <audio_input>...] [-q <quality>] [-r <replay_buffer_size_sec>] [-k h264|h265] [-ac aac|opus|flac] [-o <output_file>]\n");
     fprintf(stderr, "OPTIONS:\n");
     fprintf(stderr, "  -w    Window to record, a display, \"screen\", \"screen-direct\", \"screen-direct-force\" or \"focused\". The display is the display (monitor) name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded. If this is \"focused\" then the currently focused window is recorded. When recording the focused window then the -s option has to be used as well.\n"
         "\"screen-direct\"/\"screen-direct-force\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Direct mode doesn't capture cursor either.\n");
@@ -504,7 +568,8 @@ static void usage() {
     fprintf(stderr, "  -r    Replay buffer size in seconds. If this is set, then only the last seconds as set by this option will be stored"
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
-    fprintf(stderr, "  -k    Codec to use. Should be either 'auto', 'h264' or 'h265'. Defaults to 'auto' which defaults to 'h265' unless recording at a higher resolution than 60. Forcefully set to 'h264' if -c is 'flv'.\n");
+    fprintf(stderr, "  -k    Video codec to use. Should be either 'auto', 'h264' or 'h265'. Defaults to 'auto' which defaults to 'h265' unless recording at a higher resolution than 3840x2160. Forcefully set to 'h264' if -c is 'flv'.\n");
+    fprintf(stderr, "  -ac   Audio codec to use. Should be either 'aac', 'opus' or 'flac'. Defaults to 'opus' for .mp4/.mkv files, otherwise defaults to 'aac'\n");
     fprintf(stderr, "  -o    The output file path. If omitted then the encoded data is sent to stdout. Required in replay mode (when using -r). In replay mode this has to be an existing directory instead of a file.\n");
     fprintf(stderr, "NOTES:\n");
     fprintf(stderr, "  Send signal SIGINT (Ctrl+C) to gpu-screen-recorder to stop and save the recording (when not using replay mode).\n");
@@ -920,7 +985,8 @@ int main(int argc, char **argv) {
         { "-q", Arg { {}, true, false } },
         { "-o", Arg { {}, true, false } },
         { "-r", Arg { {}, true, false } },
-        { "-k", Arg { {}, true, false } }
+        { "-k", Arg { {}, true, false } },
+        { "-ac", Arg { {}, true, false } }
     };
 
     for(int i = 1; i < argc - 1; i += 2) {
@@ -945,19 +1011,37 @@ int main(int argc, char **argv) {
         }
     }
 
-    VideoCodec video_codec;
-    const char *codec_to_use = args["-k"].value();
-    if(!codec_to_use)
-        codec_to_use = "auto";
+    VideoCodec video_codec = VideoCodec::H265;
+    const char *video_codec_to_use = args["-k"].value();
+    if(!video_codec_to_use)
+        video_codec_to_use = "auto";
 
-    if(strcmp(codec_to_use, "h264") == 0) {
+    if(strcmp(video_codec_to_use, "h264") == 0) {
         video_codec = VideoCodec::H264;
-    } else if(strcmp(codec_to_use, "h265") == 0) {
+    } else if(strcmp(video_codec_to_use, "h265") == 0) {
         video_codec = VideoCodec::H265;
-    } else if(strcmp(codec_to_use, "auto") != 0) {
-        fprintf(stderr, "Error: -k should either be either 'auto', 'h264' or 'h265', got: '%s'\n", codec_to_use);
+    } else if(strcmp(video_codec_to_use, "auto") != 0) {
+        fprintf(stderr, "Error: -k should either be either 'auto', 'h264' or 'h265', got: '%s'\n", video_codec_to_use);
         usage();
     }
+
+    AudioCodec audio_codec = AudioCodec::AAC;
+    const char *audio_codec_to_use = args["-ac"].value();
+    if(!audio_codec_to_use)
+        audio_codec_to_use = "opus";
+
+    if(strcmp(audio_codec_to_use, "aac") == 0) {
+        audio_codec = AudioCodec::AAC;
+    } else if(strcmp(audio_codec_to_use, "opus") == 0) {
+        audio_codec = AudioCodec::OPUS;
+    } else if(strcmp(audio_codec_to_use, "flac") == 0) {
+        audio_codec = AudioCodec::FLAC;
+    } else {
+        fprintf(stderr, "Error: -ac should either be either 'aac', 'opus' or 'flac', got: '%s'\n", audio_codec_to_use);
+        usage();
+    }
+
+    const AudioFormat audio_format = audio_codec_get_audio_format(audio_codec);
 
     const Arg &audio_input_arg = args["-a"];
     const std::vector<AudioInput> audio_inputs = get_pulseaudio_inputs();
@@ -1242,9 +1326,37 @@ int main(int argc, char **argv) {
             file_extension = file_extension.substr(0, comma_index);
     }
 
+    switch(audio_codec) {
+        case AudioCodec::AAC: {
+            break;
+        }
+        case AudioCodec::OPUS: {
+            if(file_extension != "mp4" && file_extension != "mkv") {
+                audio_codec_to_use = "aac";
+                audio_codec = AudioCodec::AAC;
+                fprintf(stderr, "Warning: opus audio codec is only supported by .mp4 and .mkv files, falling back to aac instead\n");
+            }
+            break;
+        }
+        case AudioCodec::FLAC: {
+            if(file_extension != "mkv") {
+                if(file_extension == "mp4") {
+                    audio_codec_to_use = "opus";
+                    audio_codec = AudioCodec::OPUS;
+                    fprintf(stderr, "Warning: flac audio codec is only supported by .mkv files, falling back to opus instead\n");
+                } else {
+                    audio_codec_to_use = "aac";
+                    audio_codec = AudioCodec::AAC;
+                    fprintf(stderr, "Warning: flac audio codec is only supported by .mkv files, falling back to aac instead\n");
+                }
+            }
+            break;
+        }
+    }
+
     const double target_fps = 1.0 / (double)fps;
 
-    if(strcmp(codec_to_use, "auto") == 0) {
+    if(strcmp(video_codec_to_use, "auto") == 0) {
         const AVCodec *h265_codec = find_h265_encoder(gpu_inf.vendor);
 
         // h265 generally allows recording at a higher resolution than h264 on nvidia cards. On a gtx 1080 4k is the max resolution for h264 but for h265 it's 8k.
@@ -1252,21 +1364,22 @@ int main(int argc, char **argv) {
         // while with h264 the fps doesn't drop.
         if(!h265_codec) {
             fprintf(stderr, "Info: using h264 encoder because a codec was not specified and your gpu does not support h265\n");
-            codec_to_use = "h264";
+            video_codec_to_use = "h264";
             video_codec = VideoCodec::H264;
         } else if(fps > 60) {
             fprintf(stderr, "Info: using h264 encoder because a codec was not specified and fps is more than 60\n");
-            codec_to_use = "h264";
+            video_codec_to_use = "h264";
             video_codec = VideoCodec::H264;
         } else {
             fprintf(stderr, "Info: using h265 encoder because a codec was not specified\n");
-            codec_to_use = "h265";
+            video_codec_to_use = "h265";
             video_codec = VideoCodec::H265;
         }
     }
 
     //bool use_hevc = strcmp(window_str, "screen") == 0 || strcmp(window_str, "screen-direct") == 0;
     if(video_codec != VideoCodec::H264 && strcmp(file_extension.c_str(), "flv") == 0) {
+        video_codec_to_use = "h264";
         video_codec = VideoCodec::H264;
         fprintf(stderr, "Warning: h265 is not compatible with flv, falling back to h264 instead.\n");
     }
@@ -1314,7 +1427,7 @@ int main(int argc, char **argv) {
 
     int audio_stream_index = VIDEO_STREAM_INDEX + 1;
     for(const MergedAudioInputs &merged_audio_inputs : requested_audio_inputs) {
-        AVCodecContext *audio_codec_context = create_audio_codec_context(fps);
+        AVCodecContext *audio_codec_context = create_audio_codec_context(fps, audio_codec);
 
         AVStream *audio_stream = nullptr;
         if(replay_buffer_size_secs == -1)
@@ -1361,7 +1474,7 @@ int main(int argc, char **argv) {
                 audio_device.sound_device.handle = NULL;
                 audio_device.sound_device.frames = 0;
             } else {
-                if(sound_device_get_by_name(&audio_device.sound_device, audio_input.name.c_str(), audio_input.description.c_str(), num_channels, audio_codec_context->frame_size) != 0) {
+                if(sound_device_get_by_name(&audio_device.sound_device, audio_input.name.c_str(), audio_input.description.c_str(), num_channels, audio_codec_context->frame_size, audio_format) != 0) {
                     fprintf(stderr, "Error: failed to get \"%s\" sound device\n", audio_input.name.c_str());
                     exit(1);
                 }
@@ -1424,7 +1537,7 @@ int main(int argc, char **argv) {
     std::deque<AVPacket> frame_data_queue;
     bool frames_erased = false;
 
-    const size_t audio_buffer_size = 1024 * 2 * 2; // 2 bytes/sample, 2 channels
+    const size_t audio_buffer_size = 1024 * 4 * 2; // max 4 bytes/sample, 2 channels
     uint8_t *empty_audio = (uint8_t*)malloc(audio_buffer_size);
     if(!empty_audio) {
         fprintf(stderr, "Error: failed to create empty audio\n");
@@ -1434,19 +1547,25 @@ int main(int argc, char **argv) {
 
     for(AudioTrack &audio_track : audio_tracks) {
         for(AudioDevice &audio_device : audio_track.audio_devices) {
-            audio_device.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, &audio_track, empty_audio, &audio_device, &audio_filter_mutex, &write_output_mutex](AVFormatContext *av_format_context) mutable {
-                SwrContext *swr = swr_alloc();
-                if(!swr) {
-                    fprintf(stderr, "Failed to create SwrContext\n");
-                    exit(1);
+            audio_device.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, &audio_track, empty_audio, &audio_device, &audio_filter_mutex, &write_output_mutex, audio_format](AVFormatContext *av_format_context) mutable {
+                const AVSampleFormat sound_device_sample_format = audio_format_to_sample_format(audio_format);
+                const bool needs_audio_conversion = audio_track.codec_context->sample_fmt != sound_device_sample_format;
+                fprintf(stderr, "Needs audio conv: %s, %d, %d\n", needs_audio_conversion ? "yes" : "no", audio_track.codec_context->sample_fmt, sound_device_sample_format);
+                SwrContext *swr = nullptr;
+                if(needs_audio_conversion) {
+                    swr = swr_alloc();
+                    if(!swr) {
+                        fprintf(stderr, "Failed to create SwrContext\n");
+                        exit(1);
+                    }
+                    av_opt_set_int(swr, "in_channel_layout", AV_CH_LAYOUT_STEREO, 0);
+                    av_opt_set_int(swr, "out_channel_layout", AV_CH_LAYOUT_STEREO, 0);
+                    av_opt_set_int(swr, "in_sample_rate", audio_track.codec_context->sample_rate, 0);
+                    av_opt_set_int(swr, "out_sample_rate", audio_track.codec_context->sample_rate, 0);
+                    av_opt_set_sample_fmt(swr, "in_sample_fmt", sound_device_sample_format, 0);
+                    av_opt_set_sample_fmt(swr, "out_sample_fmt", audio_track.codec_context->sample_fmt, 0);
+                    swr_init(swr);
                 }
-                av_opt_set_int(swr, "in_channel_layout", AV_CH_LAYOUT_STEREO, 0);
-                av_opt_set_int(swr, "out_channel_layout", AV_CH_LAYOUT_STEREO, 0);
-                av_opt_set_int(swr, "in_sample_rate", audio_track.codec_context->sample_rate, 0);
-                av_opt_set_int(swr, "out_sample_rate", audio_track.codec_context->sample_rate, 0);
-                av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_S16, 0);
-                av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLTP, 0);
-                swr_init(swr);
 
                 const double target_audio_hz = 1.0 / (double)audio_track.codec_context->sample_rate;
                 double received_audio_time = clock_get_monotonic_seconds();
@@ -1483,7 +1602,11 @@ int main(int argc, char **argv) {
                         // TODO:
                         //audio_track.frame->data[0] = empty_audio;
                         received_audio_time = this_audio_frame_time;
-                        swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.codec_context->frame_size);
+                        if(needs_audio_conversion)
+                            swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&empty_audio, audio_track.codec_context->frame_size);
+                        else
+                            audio_track.frame->data[0] = empty_audio;
+
                         // TODO: Check if duplicate frame can be saved just by writing it with a different pts instead of sending it again
                         std::lock_guard<std::mutex> lock(audio_filter_mutex);
                         for(int i = 0; i < num_missing_frames; ++i) {
@@ -1510,7 +1633,10 @@ int main(int argc, char **argv) {
 
                     if(got_audio_data) {
                         // TODO: Instead of converting audio, get float audio from alsa. Or does alsa do conversion internally to get this format?
-                        swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.codec_context->frame_size);
+                        if(needs_audio_conversion)
+                            swr_convert(swr, &audio_track.frame->data[0], audio_track.frame->nb_samples, (const uint8_t**)&sound_buffer, audio_track.codec_context->frame_size);
+                        else
+                            audio_track.frame->data[0] = (uint8_t*)sound_buffer;
 
                         if(audio_track.graph) {
                             std::lock_guard<std::mutex> lock(audio_filter_mutex);
@@ -1531,7 +1657,8 @@ int main(int argc, char **argv) {
                     }
                 }
 
-                swr_free(&swr);
+                if(swr)
+                    swr_free(&swr);
             }, av_format_context);
         }
     }

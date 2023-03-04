@@ -35,13 +35,18 @@ struct MergedAudioInputs {
     std::vector<AudioInput> audio_inputs;
 };
 
+typedef enum {
+    S16,
+    S32
+} AudioFormat;
+
 /*
     Get a sound device by name, returning the device into the @device parameter.
     The device should be closed with @sound_device_close after it has been used
     to clean up internal resources.
     Returns 0 on success, or a negative value on failure.
 */
-int sound_device_get_by_name(SoundDevice *device, const char *device_name, const char *description, unsigned int num_channels, unsigned int period_frame_size);
+int sound_device_get_by_name(SoundDevice *device, const char *device_name, const char *description, unsigned int num_channels, unsigned int period_frame_size, AudioFormat audio_format);
 
 void sound_device_close(SoundDevice *device);
 

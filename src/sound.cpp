@@ -227,20 +227,38 @@ static int pa_sound_device_read(pa_handle *p) {
     return success ? 0 : -1;
 }
 
-int sound_device_get_by_name(SoundDevice *device, const char *device_name, const char *description, unsigned int num_channels, unsigned int period_frame_size) {
+static pa_sample_format_t audio_format_to_pulse_audio_format(AudioFormat audio_format) {
+    switch(audio_format) {
+        case S16: return PA_SAMPLE_S16LE;
+        case S32: return PA_SAMPLE_S32LE;
+    }
+    assert(false);
+    return PA_SAMPLE_S16LE;
+}
+
+static int audio_format_to_get_bytes_per_sample(AudioFormat audio_format) {
+    switch(audio_format) {
+        case S16: return 2;
+        case S32: return 4;
+    }
+    assert(false);
+    return 2;
+}
+
+int sound_device_get_by_name(SoundDevice *device, const char *device_name, const char *description, unsigned int num_channels, unsigned int period_frame_size, AudioFormat audio_format) {
     pa_sample_spec ss;
-    ss.format = PA_SAMPLE_S16LE;
+    ss.format = audio_format_to_pulse_audio_format(audio_format);
     ss.rate = 48000;
     ss.channels = num_channels;
-    int error;
 
     pa_buffer_attr buffer_attr;
     buffer_attr.tlength = -1;
     buffer_attr.prebuf = -1;
     buffer_attr.minreq = -1;
-    buffer_attr.maxlength = period_frame_size * 2 * num_channels; // 2 bytes/sample, @num_channels channels
+    buffer_attr.maxlength = period_frame_size * audio_format_to_get_bytes_per_sample(audio_format) * num_channels; // 2/4 bytes/sample, @num_channels channels
     buffer_attr.fragsize = buffer_attr.maxlength;
 
+    int error = 0;
     pa_handle *handle = pa_sound_device_new(nullptr, description, device_name, description, &ss, &buffer_attr, &error);
     if(!handle) {
         fprintf(stderr, "pa_sound_device_new() failed: %s. Audio input device %s might not be valid\n", pa_strerror(error), description);
