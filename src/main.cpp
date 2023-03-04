@@ -288,8 +288,9 @@ static AVCodecContext* create_audio_codec_context(int fps, AudioCodec audio_code
     codec_context->sample_fmt = audio_codec_get_sample_format(audio_codec);
     codec_context->bit_rate = audio_codec_get_get_bitrate(audio_codec);
     codec_context->sample_rate = 48000;
-    if(audio_codec == AudioCodec::AAC)
-        codec_context->profile = FF_PROFILE_AAC_LOW;
+    codec_context->profile = FF_PROFILE_UNKNOWN;
+    //if(audio_codec == AudioCodec::AAC)
+    //    codec_context->profile = FF_PROFILE_AAC_LOW;
 #if LIBAVCODEC_VERSION_MAJOR < 60
     codec_context->channel_layout = AV_CH_LAYOUT_STEREO;
     codec_context->channels = 2;
