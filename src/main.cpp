@@ -444,8 +444,11 @@ static const AVCodec* find_h265_encoder(gpu_vendor vendor) {
 }
 
 static AVFrame* open_audio(AVCodecContext *audio_codec_context) {
+    AVDictionary *options = nullptr;
+    av_dict_set(&options, "strict", "experimental", 0);
+
     int ret;
-    ret = avcodec_open2(audio_codec_context, audio_codec_context->codec, nullptr);
+    ret = avcodec_open2(audio_codec_context, audio_codec_context->codec, &options);
     if(ret < 0) {
         fprintf(stderr, "failed to open codec, reason: %s\n", av_error_to_string(ret));
         exit(1);
@@ -548,6 +551,8 @@ static void open_video(AVCodecContext *codec_context, VideoQuality video_quality
     if(codec_context->codec_id == AV_CODEC_ID_H264)
         av_dict_set(&options, "profile", "high", 0);
 
+    av_dict_set(&options, "strict", "experimental", 0);
+
     int ret = avcodec_open2(codec_context, codec_context->codec, &options);
     if (ret < 0) {
         fprintf(stderr, "Error: Could not open video codec: %s\n", av_error_to_string(ret));
@@ -559,7 +564,7 @@ static void usage() {
     fprintf(stderr, "usage: gpu-screen-recorder -w <window_id|monitor|focused> [-c <container_format>] [-s WxH] -f <fps> [-a <audio_input>...] [-q <quality>] [-r <replay_buffer_size_sec>] [-k h264|h265] [-ac aac|opus|flac] [-o <output_file>]\n");
     fprintf(stderr, "OPTIONS:\n");
     fprintf(stderr, "  -w    Window to record, a display, \"screen\", \"screen-direct\", \"screen-direct-force\" or \"focused\". The display is the display (monitor) name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded. If this is \"focused\" then the currently focused window is recorded. When recording the focused window then the -s option has to be used as well.\n"
-        "\"screen-direct\"/\"screen-direct-force\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Direct mode doesn't capture cursor either.\n");
+        "        \"screen-direct\"/\"screen-direct-force\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Direct mode doesn't capture cursor either. \"screen-direct-force\" is not recommended unless you use a VRR monitor because there might be driver issues that cause the video to stutter or record a black screen.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv. Only required if no output file is specified or if recording in replay buffer mode. If an output file is specified and -c is not used then the container format is determined from the output filename extension.\n");
     fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. This option is only supported (and required) when -w is \"focused\".\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
@@ -569,7 +574,7 @@ static void usage() {
         " and the video will only be saved when the gpu-screen-recorder is closed. This feature is similar to Nvidia's instant replay feature."
         " This option has be between 5 and 1200. Note that the replay buffer size will not always be precise, because of keyframes. Optional, disabled by default.\n");
     fprintf(stderr, "  -k    Video codec to use. Should be either 'auto', 'h264' or 'h265'. Defaults to 'auto' which defaults to 'h265' unless recording at a higher resolution than 3840x2160. Forcefully set to 'h264' if -c is 'flv'.\n");
-    fprintf(stderr, "  -ac   Audio codec to use. Should be either 'aac', 'opus' or 'flac'. Defaults to 'opus' for .mp4/.mkv files, otherwise defaults to 'aac'. 'opus' is only supported by .mp4/.mkv files and 'flac' is only supported by .mkv files.\n");
+    fprintf(stderr, "  -ac   Audio codec to use. Should be either 'aac', 'opus' or 'flac'. Defaults to 'opus' for .mp4/.mkv files, otherwise defaults to 'aac'. 'opus' and 'flac' is only supported by .mp4/.mkv files. 'opus' is recommended for best performance and smallest audio size.\n");
     fprintf(stderr, "  -o    The output file path. If omitted then the encoded data is sent to stdout. Required in replay mode (when using -r). In replay mode this has to be an existing directory instead of a file.\n");
     fprintf(stderr, "NOTES:\n");
     fprintf(stderr, "  Send signal SIGINT (Ctrl+C) to gpu-screen-recorder to stop and save the recording (when not using replay mode).\n");
@@ -734,7 +739,10 @@ static void save_replay_async(AVCodecContext *video_codec_context, int video_str
             return;
         }
 
-        ret = avformat_write_header(av_format_context, nullptr);
+        AVDictionary *options = nullptr;
+        av_dict_set(&options, "strict", "experimental", 0);
+
+        ret = avformat_write_header(av_format_context, &options);
         if (ret < 0) {
             fprintf(stderr, "Error occurred when writing header to output file: %s\n", av_error_to_string(ret));
             return;
@@ -771,6 +779,7 @@ static void save_replay_async(AVCodecContext *video_codec_context, int video_str
 
         avio_close(av_format_context->pb);
         avformat_free_context(av_format_context);
+        av_dict_free(&options);
 
         for(AudioTrack &audio_track : audio_tracks) {
             audio_track.stream = nullptr;
@@ -1339,16 +1348,10 @@ int main(int argc, char **argv) {
             break;
         }
         case AudioCodec::FLAC: {
-            if(file_extension != "mkv") {
-                if(file_extension == "mp4") {
-                    audio_codec_to_use = "opus";
-                    audio_codec = AudioCodec::OPUS;
-                    fprintf(stderr, "Warning: flac audio codec is only supported by .mkv files, falling back to opus instead\n");
-                } else {
-                    audio_codec_to_use = "aac";
-                    audio_codec = AudioCodec::AAC;
-                    fprintf(stderr, "Warning: flac audio codec is only supported by .mkv files, falling back to aac instead\n");
-                }
+            if(file_extension != "mp4" && file_extension != "mkv") {
+                audio_codec_to_use = "aac";
+                audio_codec = AudioCodec::AAC;
+                fprintf(stderr, "Warning: flac audio codec is only supported by .mp4 and .mkv files, falling back to aac instead\n");
             }
             break;
         }
@@ -1507,11 +1510,16 @@ int main(int argc, char **argv) {
     }
 
     if(replay_buffer_size_secs == -1) {
-        int ret = avformat_write_header(av_format_context, nullptr);
+        AVDictionary *options = nullptr;
+        av_dict_set(&options, "strict", "experimental", 0);
+
+        int ret = avformat_write_header(av_format_context, &options);
         if (ret < 0) {
             fprintf(stderr, "Error occurred when writing header to output file: %s\n", av_error_to_string(ret));
             return 1;
         }
+
+        av_dict_free(&options);
     }
 
     const double start_time_pts = clock_get_monotonic_seconds();
@@ -1550,7 +1558,6 @@ int main(int argc, char **argv) {
             audio_device.thread = std::thread([record_start_time, replay_buffer_size_secs, &frame_data_queue, &frames_erased, &audio_track, empty_audio, &audio_device, &audio_filter_mutex, &write_output_mutex, audio_format](AVFormatContext *av_format_context) mutable {
                 const AVSampleFormat sound_device_sample_format = audio_format_to_sample_format(audio_format);
                 const bool needs_audio_conversion = audio_track.codec_context->sample_fmt != sound_device_sample_format;
-                fprintf(stderr, "Needs audio conv: %s, %d, %d\n", needs_audio_conversion ? "yes" : "no", audio_track.codec_context->sample_fmt, sound_device_sample_format);
                 SwrContext *swr = nullptr;
                 if(needs_audio_conversion) {
                     swr = swr_alloc();
