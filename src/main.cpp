@@ -281,6 +281,11 @@ static AVCodecContext* create_audio_codec_context(int fps, AudioCodec audio_code
         exit(1);
     }
 
+    fprintf(stderr, "Audio codec: %s, supported sample formats:\n", audio_codec_get_name(audio_codec));
+    for(size_t i = 0; codec->sample_fmts && codec->sample_fmts[i] != -1; ++i) {
+        fprintf(stderr, "  %zu: %s\n", i, av_get_sample_fmt_name(codec->sample_fmts[i]));
+    }
+
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
 
     assert(codec->type == AVMEDIA_TYPE_AUDIO);
@@ -288,9 +293,8 @@ static AVCodecContext* create_audio_codec_context(int fps, AudioCodec audio_code
     codec_context->sample_fmt = audio_codec_get_sample_format(audio_codec);
     codec_context->bit_rate = audio_codec_get_get_bitrate(audio_codec);
     codec_context->sample_rate = 48000;
-    codec_context->profile = FF_PROFILE_UNKNOWN;
-    //if(audio_codec == AudioCodec::AAC)
-    //    codec_context->profile = FF_PROFILE_AAC_LOW;
+    if(audio_codec == AudioCodec::AAC)
+        codec_context->profile = FF_PROFILE_AAC_LOW;
 #if LIBAVCODEC_VERSION_MAJOR < 60
     codec_context->channel_layout = AV_CH_LAYOUT_STEREO;
     codec_context->channels = 2;
