@@ -413,6 +413,8 @@ static AVCodecContext *create_video_codec_context(AVPixelFormat pix_fmt,
     codec_context->bit_rate = 0;
     #endif
 
+    av_opt_set_int(codec_context->priv_data, "b_ref_mode", 0, 0);
+
     //codec_context->rc_max_rate = codec_context->bit_rate;
     //codec_context->rc_min_rate = codec_context->bit_rate;
     //codec_context->rc_buffer_size = codec_context->bit_rate / 10;
