@@ -1765,7 +1765,9 @@ int main(int argc, char **argv) {
         double frame_time_overflow = frame_timer_elapsed - target_fps;
         if (frame_time_overflow >= 0.0) {
             frame_timer_start = time_now - frame_time_overflow;
-            gsr_capture_capture(capture, frame);
+            int was_valid = gsr_capture_capture(capture, frame);
+            if (easy_crash && was_valid == -1) // -1 means not valid
+                return 4; // Some probably recoverable error but since easy_crash is enabled, just crash
 
             const double this_video_frame_time = clock_get_monotonic_seconds();
             const int64_t expected_frames = std::round((this_video_frame_time - start_time_pts) / target_fps);
