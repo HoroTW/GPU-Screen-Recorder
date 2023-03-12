@@ -595,6 +595,7 @@ static void usage() {
     fprintf(stderr, "  -w    Window to record, a display, \"screen\", \"screen-direct\", \"screen-direct-force\" or \"focused\". The display is the display (monitor) name in xrandr and if \"screen\" or \"screen-direct\" is selected then all displays are recorded. If this is \"focused\" then the currently focused window is recorded. When recording the focused window then the -s option has to be used as well.\n"
         "        \"screen-direct\"/\"screen-direct-force\" skips one texture copy for fullscreen applications so it may lead to better performance and it works with VRR monitors when recording fullscreen application but may break some applications, such as mpv in fullscreen mode. Direct mode doesn't capture cursor either. \"screen-direct-force\" is not recommended unless you use a VRR monitor because there might be driver issues that cause the video to stutter or record a black screen.\n");
     fprintf(stderr, "  -c    Container format for output file, for example mp4, or flv. Only required if no output file is specified or if recording in replay buffer mode. If an output file is specified and -c is not used then the container format is determined from the output filename extension.\n");
+    fprintf(stderr, "  -e    Easy Crash [true/false] defaults to false - if easy crash is true the gpu-screen-recorder will not try as hard to restart the recording session.\n");
     fprintf(stderr, "  -s    The size (area) to record at in the format WxH, for example 1920x1080. This option is only supported (and required) when -w is \"focused\".\n");
     fprintf(stderr, "  -f    Framerate to record at.\n");
     fprintf(stderr, "  -a    Audio device to record from (pulse audio device). Can be specified multiple times. Each time this is specified a new audio track is added for the specified audio device. A name can be given to the audio input device by prefixing the audio input with <name>/, for example \"dummy/alsa_output.pci-0000_00_1b.0.analog-stereo.monitor\". Multiple audio devices can be merged into one audio track by using \"|\" as a separator into one -a argument, for example: -a \"alsa_output1|alsa_output2\". Optional, no audio track is added by default.\n");
@@ -1015,8 +1016,10 @@ int main(int argc, char **argv) {
     //av_log_set_level(AV_LOG_TRACE);
 
     std::map<std::string, Arg> args = {
+        //                optional?, list?
         { "-w", Arg { {}, false, false } },
         { "-c", Arg { {}, true, false } },
+        { "-e", Arg { {}, true, false } },
         { "-f", Arg { {}, false, false } },
         { "-s", Arg { {}, true, false } },
         { "-a", Arg { {}, true, true } },
@@ -1111,6 +1114,20 @@ int main(int argc, char **argv) {
     }
 
     const char *container_format = args["-c"].value();
+
+    const char *easy_crash_str = args["-e"].value();
+    if(!easy_crash_str)
+        easy_crash_str = "false";
+
+    bool easy_crash = false;    
+    if(strcmp(easy_crash_str, "true") == 0) {
+        easy_crash = true;
+        fprintf(stderr, "Warning: Easy crash mode is enabled. This will make the program crash more easily when it encounters an error.\n");
+    } else if(strcmp(easy_crash_str, "false") != 0) {
+        fprintf(stderr, "Error: -e should either be either 'true' or 'false', got: '%s'\n", easy_crash_str);
+        usage();
+    }
+
     int fps = atoi(args["-f"].value());
     if(fps == 0) {
         fprintf(stderr, "Invalid fps argument: %s\n", args["-f"].value());
