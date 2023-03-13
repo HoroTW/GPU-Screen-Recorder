@@ -1,3 +1,4 @@
+## About this fork
 This version of GPU Screen Recorder has some small changes so I can run it 24/7.
 
 The original awesome version can be found [here](https://git.dec05eba.com/gpu-screen-recorder/).
@@ -8,6 +9,8 @@ Since I don't know enough about how to fix this issue in a proper way, I just ad
 An additional parameter `-e` (easy-crash) was added to the program to enable this behavior.
 
 This fixes the case where the recording fails when the screen saver is activated or the screen is locked and switched off.
+
+## Other changes that were benifical on my system
 
 After Standby or Hibernation I had another issue, that could be easier fixed by following the instructions in the [Arch Wiki](https://wiki.archlinux.org/title/NVIDIA/Tips_and_tricks#Preserve_video_memory_after_suspend).
 
@@ -30,13 +33,22 @@ echo "options nvidia NVreg_PreserveVideoMemoryAllocations=1 NVreg_TemporaryFileP
 
 This also fixed some other glitches that I usually had after standby or hibernate. (e.g. `steam friends` only showing a black window)
 
+## My Setup
 I added my watcher script to the repo, which is a simple bash script that restarts the recording if it fails - see `replay247.sh`.
-I also added a global hotkey to save the last 5 minutes of the recording to a file - `killall -SIGUSR1 gpu-screen-recorder`.
+I also added a global hotkey to save the last 5 minutes of the recording by executing 
+
+```bash
+killall -SIGUSR1 gpu-screen-recorder
+```
 
 The recording "survives" all my monitor setup changes (1 Monitor for gaming, 3 Monitors for work, 4 with some Mirroring).
 
+## Installation
+The program can be installed by running `install.sh` as root: `sudo ./install.sh`, but you need to manually install the dependencies, as described below in the original README.
+
 Cheers ~Horo
 
+Start of the original README
 -------------
 
 # GPU Screen Recorder
