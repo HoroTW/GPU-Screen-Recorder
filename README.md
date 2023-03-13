@@ -65,7 +65,13 @@ The following environment variables can be set:
 | OUTPUTDIR | The directory to save the recordings to. | $HOME/Videos |
 | ADDITIONAL_ARGS | Additional arguments to pass to the binary. | N/A |
 
+After placing the service file in a location where systemd can find it, the service can be enabled and started with the following commands:
 
+```bash
+systemctl --user daemon-reload # Reload systemd (not strictly necessary on first install)
+systemctl --user enable gpu-screen-recorder.service # Enable the service
+systemctl --user start gpu-screen-recorder.service # Start the service
+```
 
 ## Installation
 The program can be installed by running `install.sh` as root: `sudo ./install.sh`, but you need to manually install the dependencies, as described below in the original README.
