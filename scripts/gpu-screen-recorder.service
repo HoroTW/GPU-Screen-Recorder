@@ -1,0 +1,20 @@
+[Unit]
+Description=GPU Screen Recorder Service to enable the creation of Shadowplay-like recordings
+After=graphical.target
+
+
+[Service]
+EnvironmentFile=-%h/.config/gpu-screen-recorder.env
+Environment=FAILFAST=true
+Environment=WINDOW=screen
+Environment=CONTAINER=mp4
+Environment=QUALITY=very_high
+Environment=CODEC=auto
+Environment=AUDIO_CODEC=opus
+Environment=FRAMERATE=60
+Environment=REPLAYDURATION=300
+Environment=OUTPUTDIR=%h/Videos
+ExecStart=/usr/local/bin/gpu-screen-recorder -e $FAILFAST -w $WINDOW -c $CONTAINER -q $QUALITY -k $CODEC -ac $AUDIO_CODEC -f $FRAMERATE -r $REPLAYDURATION -o $OUTPUTDIR $ADDITIONAL_ARGS
+
+[Install]
+WantedBy=graphical.target
