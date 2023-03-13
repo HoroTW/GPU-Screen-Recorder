@@ -6,7 +6,7 @@ I think this is a really great tool, the quality of the recordings is really goo
 
 I found some cases where the program would not crash but also would not record anything.
 Since I don't know enough about how to fix this issue in a proper way, I just added the option to crash in those cases.
-An additional parameter `-e` (easy-crash) was added to the program to enable this behavior.
+An additional parameter `-e` (fail-fast) was added to the program to enable this behavior.
 
 This fixes the case where the recording fails when the screen saver is activated or the screen is locked and switched off.
 
