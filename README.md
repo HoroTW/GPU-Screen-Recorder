@@ -10,7 +10,7 @@ An additional parameter `-e` (fail-fast) was added to the program to enable this
 
 This fixes the case where the recording fails when the screen saver is activated or the screen is locked and switched off.
 
-## Other changes that were benifical on my system
+## Other changes that were beneficial on my system
 
 After Standby or Hibernation I had another issue, that could be easier fixed by following the instructions in the [Arch Wiki](https://wiki.archlinux.org/title/NVIDIA/Tips_and_tricks#Preserve_video_memory_after_suspend).
 
