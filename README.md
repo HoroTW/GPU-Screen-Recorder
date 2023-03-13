@@ -43,6 +43,30 @@ killall -SIGUSR1 gpu-screen-recorder
 
 The recording "survives" all my monitor setup changes (1 Monitor for gaming, 3 Monitors for work, 4 with some Mirroring).
 
+## Running as a service
+
+This repository includes a systemd service file, which can be used to run the program as a service. 
+The service file is located in `scripts/gpu-screen-recorder.service`, and should be copied to a location where systemd can find it, e.g. `$HOME/.config/systemd/user`.
+It is recommended to run the service in user mode.
+
+The service can be configure by modifying the service environment file, which is read from  `$HOME/.config/gpu-screen-recorder.env`.
+The following environment variables can be set:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| FAILFAST | If set to true, the program will exit if capture errors occur,<br>which can help service reliability. | true |
+| WINDOW | The window to capture. See the binary documentation for more details. | screen |
+| CONTAINER | The container format to use. | mp4 |
+| QUALITY | The quality to use. | very_high |
+| CODEC | The video codec to use. | auto |
+| AUDIO_CODEC | The audio codec to use. | opus |
+| FRAMERATE | The framerate to record in. | 60 |
+| REPLAYDURATION | The duration of the replay buffer in seconds. | 300 |
+| OUTPUTDIR | The directory to save the recordings to. | $HOME/Videos |
+| ADDITIONAL_ARGS | Additional arguments to pass to the binary. | N/A |
+
+
+
 ## Installation
 The program can be installed by running `install.sh` as root: `sudo ./install.sh`, but you need to manually install the dependencies, as described below in the original README.
 
