@@ -1,3 +1,12 @@
+# DEPRECATED 
+THE ORIGINAL PROJECT CAN BE FOUND [here](https://git.dec05eba.com/gpu-screen-recorder/).
+
+## Reason for deprecation
+NVIDIA has a bug that makes 24/7 recording on Linux not really feasible due to high power consumption... 
+To find out more:
+https://forums.developer.nvidia.com/t/nvdec-forces-gpu-into-p2-cuda-state-much-higher-power-consumption-than-with-vdpau/55466
+https://forums.developer.nvidia.com/t/whats-the-situation-with-vdpau-vaapi-nvdec/61031
+
 ## About this fork
 This version of GPU Screen Recorder has some small changes so I can run it 24/7.
 
